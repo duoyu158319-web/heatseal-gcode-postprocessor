@@ -1,0 +1,9 @@
+{
+  "name": "heatseal-gcode-postprocessor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-site.mjs",
+    "test": "node --test web/core.test.mjs"
+  }
+}

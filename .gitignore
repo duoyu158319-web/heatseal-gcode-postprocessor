@@ -12,6 +12,7 @@
 
 # Dependencies, caches, and OS files
 node_modules/
+dist/
 /vendor/
 /*.md
 !/README.md
