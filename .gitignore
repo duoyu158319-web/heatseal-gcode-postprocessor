@@ -1,0 +1,20 @@
+# Generated and source fabrication files
+*.gcode
+*.gcode.*
+*.3mf
+*.stl
+*.3dm
+*.rhl
+
+# Local documents and review artifacts
+*.docx
+.codex-doc-review/
+
+# Dependencies, caches, and OS files
+node_modules/
+/vendor/
+/*.md
+!/README.md
+.DS_Store
+Thumbs.db
+*.log
