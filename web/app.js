@@ -1,6 +1,6 @@
-import { generateGcode, getReplayCandidates, md5Text, offsetTrack, parseGcode, parseObjectNames, summarizeLayer } from "./core.mjs";
+import { analyzeLayerGeometry, generateGcode, getReplayCandidates, md5Text, offsetTrack, parseGcode, parseObjectNames, summarizeLayer } from "./core.mjs";
 const $ = (q) => document.querySelector(q);
-const state = { file: null, gcode: "", path: "", parsed: null, names: {}, configs: [] };
+const state = { file: null, gcode: "", path: "", parsed: null, names: {}, configs: [], geometryLayer: null, geometry: [] };
 const notice = $("#notice"), configs = $("#config-list"), fileInput = $("#file-input"), drop = $("#dropzone");
 const esc = (v) => String(v).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const nameOf = (id) => state.names[id] || (id === "未标注主体" ? id : `主体 ${id}`);
@@ -39,6 +39,20 @@ function renderObjects() {
 function renderTimeline() {
   const rows = state.parsed.layers.map(summarizeLayer), max = Math.max(1, ...rows.map((r) => r.walls));
   $("#timeline").innerHTML = [...rows].reverse().map((r) => `<button class="layer-tick ${r.paused ? "has-pause" : ""}" data-layer="${r.number}" title="第 ${r.number} 层 · Z${r.z ?? "?"} mm · ${r.walls} 条墙轨迹"><span class="layer-position"><b>第 ${r.number} 层</b><small>Z ${r.z ?? "?"} mm</small></span><span class="wall-bar"><i style="width:${Math.max(4, r.walls / max * 100)}%"></i></span><strong>${r.walls}</strong></button>`).join("");
+}
+
+function renderGeometry() {
+  const selector = $("#geometry-layer"), current = Number(state.geometryLayer ?? state.parsed.layers.at(-1)?.number);
+  selector.innerHTML = [...state.parsed.layers].reverse().map((layer) => `<option value="${layer.number}" ${layer.number === current ? "selected" : ""}>第 ${layer.number} 层 · Z ${layer.z ?? "?"} mm</option>`).join("");
+  state.geometryLayer = current;
+  const analysis = state.geometry.find((item) => item.layerNumber === current), contours = analysis?.contours ?? [], components = analysis?.components ?? [];
+  $("#geometry-components").textContent = components.length; $("#geometry-depth").textContent = analysis?.maxDepth ?? 0; $("#geometry-cross").textContent = analysis?.crossObjectRelations.length ?? 0;
+  $("#geometry-list").innerHTML = contours.length ? components.map((component) => {
+    const members = component.contourIndices.map((index) => contours[index]);
+    return `<article class="geometry-component"><header><b>连通块 ${component.id}</b><span>${component.contourIndices.length} 条轮廓 · ${component.objectIds.length} 个主体</span></header>${members.sort((a, b) => a.depth - b.depth || b.area - a.area).map((contour) => `<div class="contour-row" style="--depth:${contour.depth}"><i class="swatch-${state.parsed.objectIds.indexOf(contour.objectId) % 4}"></i><span><strong>${esc(nameOf(contour.objectId))}</strong><small>${contour.depth === 0 ? "外层轮廓" : `嵌套第 ${contour.depth} 层`} · 面积约 ${contour.area.toFixed(1)} mm²</small></span><em>${contour.parent === null ? "根轮廓" : `包含于 #${contour.parent + 1}`}</em></div>`).join("")}</article>`;
+  }).join("") : "<p class='geometry-empty'>这一层没有可分析的闭合墙轮廓。</p>";
+  const relations = analysis?.crossObjectRelations ?? [];
+  $("#geometry-relations").innerHTML = relations.length ? relations.map((relation) => relation.type === "nested" ? `<li><b>${esc(nameOf(relation.innerObjectId))}</b> 的轮廓嵌套在 <b>${esc(nameOf(relation.outerObjectId))}</b> 内</li>` : `<li><b>${esc(nameOf(relation.aObjectId))}</b> 与 <b>${esc(nameOf(relation.bObjectId))}</b> 的轮廓接触或相交</li>`).join("") : "<li>未发现不同主体之间的轮廓接触或跨主体嵌套。</li>";
 }
 
 const pointsFor = (track) => {
@@ -122,7 +136,7 @@ function renderConfigs() {
 function render() {
   $("#file-name").textContent = state.file.name; $("#file-size").textContent = bytes(state.file.size); $("#total-layers").textContent = state.parsed.totalLayers; $("#max-z").textContent = state.parsed.layers.at(-1)?.z ?? "—"; $("#object-count").textContent = state.parsed.objectIds.length; $("#nozzle-temp").textContent = state.parsed.nozzleTemperature ? `${state.parsed.nozzleTemperature}°C` : "—";
   if (state.parsed.preprocessed) msg("检测到文件已包含暂停或复走后处理代码。建议上传 Bambu Studio 原始切片文件，避免重复插入。", "warning");
-  renderObjects(); renderTimeline(); renderConfigs();
+  renderObjects(); renderTimeline(); renderGeometry(); renderConfigs();
 }
 
 async function load(file) {
@@ -133,7 +147,7 @@ async function load(file) {
     const zip = await JSZip.loadAsync(await file.arrayBuffer()), path = Object.keys(zip.files).find((n) => /Metadata\/plate_\d+\.gcode$/i.test(n));
     if (!path) throw new Error("压缩包中没有找到 Metadata/plate_*.gcode。 ");
     const gcode = await zip.file(path).async("string"), slice = await zip.file("Metadata/slice_info.config")?.async("string"), platePath = Object.keys(zip.files).find((n) => /Metadata\/plate_\d+\.json$/i.test(n)), plate = platePath ? await zip.file(platePath).async("string") : "";
-    Object.assign(state, { file, gcode, path, parsed: parseGcode(gcode), names: parseObjectNames(slice, plate) }); state.configs = [newConfig()];
+    Object.assign(state, { file, gcode, path, parsed: parseGcode(gcode), names: parseObjectNames(slice, plate) }); state.geometry = state.parsed.layers.map((layer) => analyzeLayerGeometry(layer)); state.geometryLayer = state.parsed.layers.at(-1)?.number; state.configs = [newConfig()];
     $("#upload-view").hidden = true; $("#workspace-view").hidden = false; render();
   } catch (e) { msg(e.message || "文件解析失败。", "error"); } finally { drop.classList.remove("is-loading"); }
 }
@@ -152,6 +166,7 @@ async function exportFile() {
 drop.onclick = () => fileInput.click(); drop.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && fileInput.click(); fileInput.onchange = () => fileInput.files[0] && load(fileInput.files[0]);
 ["dragenter","dragover"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.add("is-dragging"); })); ["dragleave","drop"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.remove("is-dragging"); })); drop.ondrop = (e) => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]);
 $("#change-file").onclick = () => fileInput.click(); $("#export-file").onclick = exportFile;
+$("#geometry-layer").onchange = (e) => { state.geometryLayer = Number(e.target.value); renderGeometry(); };
 $("#add-pause").onclick = () => { const used = new Set(state.configs.map((c) => c.layerNumber)); let layer = state.parsed.totalLayers; while (used.has(layer) && layer > 2) layer--; state.configs.push(newConfig(layer)); renderConfigs(); };
 $("#timeline").onclick = (e) => { const tick = e.target.closest("[data-layer]"); if (!tick || Number(tick.dataset.layer) < 2) return; state.configs.push(newConfig(Number(tick.dataset.layer))); renderConfigs(); configs.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "center" }); };
 configs.onclick = (e) => { const card = e.target.closest("[data-config]"); if (!card) return; const cfg = state.configs.find((c) => c.id === card.dataset.config), action = e.target.closest("[data-action]")?.dataset.action; if (action === "remove") state.configs = state.configs.filter((c) => c.id !== cfg.id); if (action) renderConfigs(); };

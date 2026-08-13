@@ -89,6 +89,66 @@ export function offsetTrack(track, amount = .2) {
   return { start: points[0], points, commands: points.slice(1).concat(points[0]).map((point) => `G1 X${round(point.x)} Y${round(point.y)}`) };
 }
 
+const pointInPolygon = (point, polygon) => {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i], b = polygon[j];
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+};
+const orientation = (a, b, c) => cross(sub(b, a), sub(c, a));
+const onSegment = (a, b, p, tolerance) => Math.abs(orientation(a, b, p)) <= tolerance && p.x >= Math.min(a.x, b.x) - tolerance && p.x <= Math.max(a.x, b.x) + tolerance && p.y >= Math.min(a.y, b.y) - tolerance && p.y <= Math.max(a.y, b.y) + tolerance;
+const segmentsTouch = (a, b, c, d, tolerance) => {
+  const o1 = orientation(a, b, c), o2 = orientation(a, b, d), o3 = orientation(c, d, a), o4 = orientation(c, d, b);
+  if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true;
+  return onSegment(a, b, c, tolerance) || onSegment(a, b, d, tolerance) || onSegment(c, d, a, tolerance) || onSegment(c, d, b, tolerance);
+};
+const expandedBoundsOverlap = (a, b, tolerance) => a.minX <= b.maxX + tolerance && a.maxX + tolerance >= b.minX && a.minY <= b.maxY + tolerance && a.maxY + tolerance >= b.minY;
+const polygonsTouch = (a, b, tolerance) => {
+  if (!expandedBoundsOverlap(a.bounds, b.bounds, tolerance)) return false;
+  for (let i = 0; i < a.points.length; i++) {
+    const a1 = a.points[i], a2 = a.points[(i + 1) % a.points.length];
+    for (let j = 0; j < b.points.length; j++) if (segmentsTouch(a1, a2, b.points[j], b.points[(j + 1) % b.points.length], tolerance)) return true;
+  }
+  return false;
+};
+
+export function analyzeLayerGeometry(layer, tolerance = .05) {
+  const contours = layer.wallTracks.filter((track) => track.closed).map((track, index) => {
+    const points = sampleTrack(track, .5), area = Math.abs(signedArea(points));
+    return { index, track, points, area, bounds: track.bounds, objectId: track.objectId, feature: track.feature, parent: null, depth: 0, component: null };
+  });
+  contours.forEach((inner) => {
+    const containers = contours.filter((outer) => outer !== inner && outer.area > inner.area && outer.bounds.minX <= inner.bounds.minX && outer.bounds.maxX >= inner.bounds.maxX && outer.bounds.minY <= inner.bounds.minY && outer.bounds.maxY >= inner.bounds.maxY && pointInPolygon(inner.points[0], outer.points));
+    inner.parent = containers.sort((a, b) => a.area - b.area)[0]?.index ?? null;
+  });
+  const byIndex = new Map(contours.map((contour) => [contour.index, contour]));
+  const depthOf = (contour, seen = new Set()) => contour.parent === null || seen.has(contour.index) ? 0 : 1 + depthOf(byIndex.get(contour.parent), new Set([...seen, contour.index]));
+  contours.forEach((contour) => contour.depth = depthOf(contour));
+  const parent = contours.map((_, index) => index), find = (x) => parent[x] === x ? x : (parent[x] = find(parent[x])), join = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; };
+  contours.forEach((contour) => { if (contour.parent !== null) join(contour.index, contour.parent); });
+  const contacts = [];
+  for (let i = 0; i < contours.length; i++) for (let j = i + 1; j < contours.length; j++) {
+    if (!polygonsTouch(contours[i], contours[j], tolerance)) continue;
+    join(i, j); contacts.push({ a: i, b: j, crossObject: contours[i].objectId !== contours[j].objectId });
+  }
+  const roots = new Map();
+  contours.forEach((contour) => { const root = find(contour.index); if (!roots.has(root)) roots.set(root, roots.size + 1); contour.component = roots.get(root); });
+  const crossObjectRelations = [];
+  contours.forEach((contour) => {
+    if (contour.parent === null) return;
+    const outer = byIndex.get(contour.parent);
+    if (outer.objectId !== contour.objectId) crossObjectRelations.push({ type: "nested", inner: contour.index, outer: outer.index, innerObjectId: contour.objectId, outerObjectId: outer.objectId });
+  });
+  contacts.filter((contact) => contact.crossObject).forEach((contact) => crossObjectRelations.push({ type: "contact", a: contact.a, b: contact.b, aObjectId: contours[contact.a].objectId, bObjectId: contours[contact.b].objectId }));
+  const components = [...roots.values()].map((id) => {
+    const members = contours.filter((contour) => contour.component === id), objectIds = [...new Set(members.map((contour) => contour.objectId))];
+    return { id, contourIndices: members.map((contour) => contour.index), objectIds, maxDepth: Math.max(0, ...members.map((contour) => contour.depth)), crossObject: objectIds.length > 1 };
+  });
+  return { layerNumber: layer.number, z: layer.z, contours, components, contacts, crossObjectRelations, maxDepth: Math.max(0, ...contours.map((contour) => contour.depth)) };
+}
+
 function statesFor(lines) {
   const before = new Array(lines.length);
   let s = { x: undefined, y: undefined, z: undefined, feed: undefined, feature: "未标注路径", objectId: "未标注主体", axesAbsolute: true, extrusionRelative: true };

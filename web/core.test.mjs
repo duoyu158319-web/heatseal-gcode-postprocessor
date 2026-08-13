@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateGcode, getReplayCandidates, md5Text, offsetTrack, parseGcode } from "./core.mjs";
+import { analyzeLayerGeometry, generateGcode, getReplayCandidates, md5Text, offsetTrack, parseGcode } from "./core.mjs";
 const fixture = `; total layer number: 3
 ; printable_height = 256
 M83
@@ -56,5 +56,19 @@ G1 E-1
   assert.match(block, /Replay loop 2\/2; factor 0\.5[\s\S]*?G1 F400/);
 });
 test("rejects duplicate layers", () => assert.throws(() => generateGcode(fixture, [{ layerNumber: 3, replay: false, circles: 1, speedFactor: .1 }, { layerNumber: 3, replay: false, circles: 1, speedFactor: .1 }]), /重复暂停/));
+test("analyzes connectivity and contour nesting by geometry", () => {
+  const twoLoops = fixture.replace("; CHANGE_LAYER\n; Z_HEIGHT: 0.4", `G1 X2 Y2 F12000
+G1 X8 Y2 E1 F800
+G1 X8 Y8 E1
+G1 X2 Y8 E1
+G1 X2 Y2 E1
+G1 E-1
+; CHANGE_LAYER
+; Z_HEIGHT: 0.4`);
+  const layer = parseGcode(twoLoops).layers.find((item) => item.number === 2), analysis = analyzeLayerGeometry(layer);
+  assert.equal(analysis.contours.length, 2);
+  assert.equal(analysis.components.length, 1);
+  assert.equal(analysis.maxDepth, 1);
+});
 test("rejects zero and non-tenth replay speeds", () => { assert.throws(() => generateGcode(fixture, [{ layerNumber: 3, replay: true, circles: 1, speedFactors: [0] }]), /第 1 圈.*0.1–1.0/); assert.throws(() => generateGcode(fixture, [{ layerNumber: 3, replay: true, circles: 1, speedFactors: [.15] }]), /第 1 圈.*0.1–1.0/); });
 test("creates standard UTF-8 MD5 values", () => { assert.equal(md5Text("abc"), "900150983CD24FB0D6963F7D28E17F72"); assert.equal(md5Text("热封"), "CF2C6657C705B0724F9D317E0EBA13FC"); });
