@@ -48,6 +48,9 @@ G1 E-1
 ; Z_HEIGHT: 0.4`);
   const candidates = getReplayCandidates(parseGcode(twoLoops), 3);
   assert.equal(candidates.tracks.length, 2);
+  assert.deepEqual(candidates.tracks.map((track) => track.areaScore), [36, 100]);
+  assert.deepEqual(candidates.tracks.map((track) => track.innerIndex), [0, 1]);
+  assert.deepEqual(candidates.tracks.map((track) => track.loopCount), [2, 2]);
   const block = generateGcode(twoLoops, [{ layerNumber: 3, replay: true, circles: 2, speedFactors: [.1, .5] }]).text.match(/; HEATSEAL_POSTPROCESS_START[\s\S]*?; HEATSEAL_POSTPROCESS_END/)?.[0] ?? "";
   assert.match(block, /Replay loop 1\/2; factor 0\.1[\s\S]*?G1 F80/);
   assert.match(block, /Replay loop 2\/2; factor 0\.5[\s\S]*?G1 F400/);

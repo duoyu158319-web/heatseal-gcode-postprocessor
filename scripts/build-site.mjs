@@ -10,7 +10,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(client, { recursive: true });
 await mkdir(server, { recursive: true });
 
-for (const file of ["index.html", "app.js", "core.mjs", "styles.css", "speed-slider.css"]) {
+for (const file of ["index.html", "app.js", "core.mjs", "styles.css", "speed-slider.css", "layout-fixes.css"]) {
   await cp(path.join(root, "web", file), path.join(client, file));
 }
 await mkdir(path.join(client, "vendor"), { recursive: true });

@@ -174,7 +174,7 @@ export function parseGcode(text) {
   const layers = rangesFor(lines, headerTotal).map((layer) => {
     const tracks = tracksFor(lines, states, layer), walls = tracks.filter((t) => /wall/i.test(t.feature) && t.closed), usable = walls.length ? walls : tracks.filter((t) => t.closed), byObject = {};
     usable.forEach((t) => (byObject[t.objectId] ??= []).push(t));
-    Object.values(byObject).forEach((xs) => xs.sort((a, b) => b.areaScore - a.areaScore));
+    Object.values(byObject).forEach((xs) => xs.sort((a, b) => a.areaScore - b.areaScore));
     const sequence = []; tracks.forEach((t) => { if (sequence.at(-1) !== t.objectId) sequence.push(t.objectId); });
     const insertionIndex = insertionFor(lines, layer);
     return { ...layer, z: layer.z ?? states[insertionIndex]?.z, tracks, wallTracks: usable, byObject, objectSequence: sequence, objectTransitions: Math.max(0, sequence.length - 1), insertionIndex, insertionState: states[insertionIndex], hasPause: /M400 U1/.test(lines.slice(layer.start, layer.end).join("\n")) };
@@ -218,8 +218,12 @@ export function md5Text(input) {
 export function getReplayCandidates(parsed, pauseLayerNumber, objectIds = []) {
   const sourceLayer = parsed.layers.find((l) => l.number === pauseLayerNumber - 1);
   if (!sourceLayer) return { sourceLayer: null, tracks: [] };
-  const tracks = objectIds.length ? objectIds.flatMap((id) => sourceLayer.byObject[id] ?? []) : Object.values(sourceLayer.byObject).flat();
-  return { sourceLayer, tracks: tracks.sort((a, b) => b.areaScore - a.areaScore) };
+  const ids = objectIds.length ? objectIds : Object.keys(sourceLayer.byObject);
+  const tracks = ids.flatMap((id) => {
+    const group = [...(sourceLayer.byObject[id] ?? [])].sort((a, b) => a.areaScore - b.areaScore);
+    return group.map((track, innerIndex) => ({ ...track, innerIndex, loopCount: group.length }));
+  });
+  return { sourceLayer, tracks };
 }
 
 const coord = (n) => Number(n).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");

@@ -148,3 +148,6 @@
   color: #b73e1c;
   font-weight: 800;
 }
+
+.loop-identity{display:flex;align-items:center;gap:7px;margin-bottom:10px;padding-bottom:9px;border-bottom:1px solid #e8e4da}
+.loop-identity b{font-size:12px}.loop-identity small{margin-left:auto;color:var(--muted);font-size:9px}
