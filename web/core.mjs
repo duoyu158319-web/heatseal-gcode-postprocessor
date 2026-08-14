@@ -178,13 +178,25 @@ function rangesFor(lines, total) {
     const m = line.match(/;\s*layer num\/total_layer_count:\s*(\d+)\/(\d+)/i);
     if (!m) return;
     let start = i, z;
-    for (let j = i; j >= Math.max(0, i - 20); j--) if (/^;\s*CHANGE_LAYER/.test(lines[j])) { start = j; break; }
+    for (let j = i; j >= Math.max(0, i - 20); j--) if (/^;\s*CHANGE_LAYER/i.test(lines[j])) { start = j; break; }
     for (let j = start; j <= Math.min(lines.length - 1, i + 4); j++) {
       const zMatch = lines[j].match(/;\s*Z_HEIGHT:\s*([\d.]+)/i);
       if (zMatch) z = Number(zMatch[1]);
     }
     marks.push({ number: Number(m[1]), total: Number(m[2]), start, marker: i, z });
   });
+  if (!marks.length) {
+    const starts = lines.flatMap((line, index) => /^;\s*CHANGE_LAYER\s*$/i.test(line) ? [index] : []);
+    starts.forEach((start, index) => {
+      const end = starts[index + 1] ?? lines.length;
+      let z;
+      for (let j = start + 1; j < Math.min(end, start + 20); j++) {
+        const zMatch = lines[j].match(/;\s*Z_HEIGHT:\s*([-+]?\d+(?:\.\d+)?)/i);
+        if (zMatch) { z = Number(zMatch[1]); break; }
+      }
+      marks.push({ number: index + 1, total: total || starts.length, start, marker: start, z });
+    });
+  }
   if (marks.length && marks[0].number > 1) marks.unshift({ number: 1, total: marks[0].total, start: 0, marker: 0, z: undefined });
   return marks.map((m, i) => ({ ...m, total: m.total || total, end: marks[i + 1]?.start ?? lines.length }));
 }

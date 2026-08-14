@@ -34,6 +34,22 @@ G1 X0 Y0 F12000
 G1 X10 Y0 E1 F800
 `;
 test("parses layers, objects and closed wall tracks", () => { const p = parseGcode(fixture), c = getReplayCandidates(p, 3); assert.equal(p.totalLayers, 3); assert.deepEqual(p.objectIds, ["7"]); assert.equal(c.sourceLayer.number, 2); assert.equal(c.tracks.length, 1); assert.equal(c.tracks[0].closed, true); assert.equal(c.tracks[0].originalFeed, 800); });
+test("parses modern Bambu layers without layer num markers", () => {
+  const modern = fixture
+    .replace("; layer num/total_layer_count: 1/3", "M991 S0 P0 ;notify layer change")
+    .replace("; layer num/total_layer_count: 2/3", "M991 S0 P1 ;notify layer change")
+    .replace("; layer num/total_layer_count: 3/3", "M991 S0 P2 ;notify layer change");
+  const parsed = parseGcode(modern), candidates = getReplayCandidates(parsed, 3);
+  assert.equal(parsed.totalLayers, 3);
+  assert.deepEqual(parsed.layers.map((layer) => ({ number: layer.number, z: layer.z })), [
+    { number: 1, z: .2 },
+    { number: 2, z: .3 },
+    { number: 3, z: .4 }
+  ]);
+  assert.deepEqual(parsed.objectIds, ["7"]);
+  assert.equal(candidates.sourceLayer.number, 2);
+  assert.equal(candidates.tracks.length, 1);
+});
 test("supports an exact 0.1 mm rounded outward offset", () => { const track = getReplayCandidates(parseGcode(fixture), 3).tracks[0], shifted = offsetTrack(track, .1), xs = shifted.points.map((p) => p.x), ys = shifted.points.map((p) => p.y); assert.ok(Math.abs(Math.min(...xs) + .1) < .001); assert.ok(Math.abs(Math.max(...xs) - 10.1) < .001); assert.ok(Math.abs(Math.min(...ys) + .1) < .001); assert.ok(Math.abs(Math.max(...ys) - 10.1) < .001); });
 test("supports zero offset without changing the source path", () => { const track = getReplayCandidates(parseGcode(fixture), 3).tracks[0], shifted = offsetTrack(track, 0); assert.deepEqual(shifted.start, track.start); assert.deepEqual(shifted.commands, track.commands); const block = generateGcode(fixture, [{ layerNumber: 3, replay: true, circles: 1, speedFactors: [.1], offsetDistances: [0] }]).text.match(/; HEATSEAL_POSTPROCESS_START[\s\S]*?; HEATSEAL_POSTPROCESS_END/)?.[0] ?? ""; assert.match(block, /outward offset 0mm/); });
 test("inserts pause and no-extrusion replay", () => { const r = generateGcode(fixture, [{ layerNumber: 3, replay: true, circles: 1, speedFactor: .1 }]), b = r.text.match(/; HEATSEAL_POSTPROCESS_START[\s\S]*?; HEATSEAL_POSTPROCESS_END/)?.[0] ?? ""; assert.match(b, /M400 U1/); assert.match(b, /G1 Z0.31 F1200/); assert.match(b, /G1 F80/); assert.doesNotMatch(b, /^G[123]\s.*(?:^|\s)E[-+]?\d/im); });
