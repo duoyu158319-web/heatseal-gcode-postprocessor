@@ -2,6 +2,7 @@ import { analyzeLayerGeometry, generateGcode, getReplayCandidates, md5Text, offs
 const $ = (q) => document.querySelector(q);
 const state = { file: null, gcode: "", path: "", parsed: null, names: {}, configs: [], geometryLayer: null, geometry: [] };
 const notice = $("#notice"), configs = $("#config-list"), fileInput = $("#file-input"), drop = $("#dropzone");
+const nextPaint = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 const esc = (v) => String(v).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const nameOf = (id) => state.names[id] || (id === "未标注主体" ? id : `主体 ${id}`);
 const msg = (text, kind = "info") => { notice.textContent = text; notice.className = `notice is-${kind}`; notice.hidden = false; };
@@ -45,7 +46,12 @@ function renderGeometry() {
   const selector = $("#geometry-layer"), current = Number(state.geometryLayer ?? state.parsed.layers.at(-1)?.number);
   selector.innerHTML = [...state.parsed.layers].reverse().map((layer) => `<option value="${layer.number}" ${layer.number === current ? "selected" : ""}>第 ${layer.number} 层 · Z ${layer.z ?? "?"} mm</option>`).join("");
   state.geometryLayer = current;
-  const analysis = state.geometry.find((item) => item.layerNumber === current), contours = analysis?.contours ?? [], components = analysis?.components ?? [];
+  let analysis = state.geometry.find((item) => item.layerNumber === current);
+  if (!analysis) {
+    const layer = state.parsed.layers.find((item) => item.number === current);
+    if (layer) { analysis = analyzeLayerGeometry(layer); state.geometry.push(analysis); }
+  }
+  const contours = analysis?.contours ?? [], components = analysis?.components ?? [];
   $("#geometry-components").textContent = components.length; $("#geometry-depth").textContent = analysis?.maxDepth ?? 0; $("#geometry-cross").textContent = analysis?.crossObjectRelations.length ?? 0;
   $("#geometry-list").innerHTML = contours.length ? components.map((component) => {
     const members = component.contourIndices.map((index) => contours[index]);
@@ -144,12 +150,18 @@ async function load(file) {
   if (!/\.3mf$/i.test(file.name)) return msg("请选择 Bambu Studio 导出的 .gcode.3mf 文件。", "error");
   try {
     drop.classList.add("is-loading");
+    msg("正在读取 3MF 压缩包…"); await nextPaint();
+    if (!globalThis.JSZip) throw new Error("解压组件加载失败，请强制刷新页面后重试。");
     const zip = await JSZip.loadAsync(await file.arrayBuffer()), path = Object.keys(zip.files).find((n) => /Metadata\/plate_\d+\.gcode$/i.test(n));
     if (!path) throw new Error("压缩包中没有找到 Metadata/plate_*.gcode。 ");
+    msg("正在解析 G-code 分层与轨迹…"); await nextPaint();
     const gcode = await zip.file(path).async("string"), slice = await zip.file("Metadata/slice_info.config")?.async("string"), platePath = Object.keys(zip.files).find((n) => /Metadata\/plate_\d+\.json$/i.test(n)), plate = platePath ? await zip.file(platePath).async("string") : "";
-    Object.assign(state, { file, gcode, path, parsed: parseGcode(gcode), names: parseObjectNames(slice, plate) }); state.geometry = state.parsed.layers.map((layer) => analyzeLayerGeometry(layer)); state.geometryLayer = state.parsed.layers.at(-1)?.number; state.configs = [newConfig()];
+    const parsed = parseGcode(gcode);
+    if (!parsed.layers.length) throw new Error("没有识别到分层信息；请确认文件由 Bambu Studio 导出并包含 CHANGE_LAYER 标记。");
+    Object.assign(state, { file, gcode, path, parsed, names: parseObjectNames(slice, plate) }); state.geometry = []; state.geometryLayer = state.parsed.layers.at(-1)?.number; state.configs = [];
     $("#upload-view").hidden = true; $("#workspace-view").hidden = false; render();
-  } catch (e) { msg(e.message || "文件解析失败。", "error"); } finally { drop.classList.remove("is-loading"); }
+    msg(`导入完成：已识别 ${state.parsed.totalLayers} 层。请在柱状图中选择需要暂停热封的层。`, "success");
+  } catch (e) { msg(`导入失败：${e.message || "文件解析失败。"}`, "error"); } finally { drop.classList.remove("is-loading"); }
 }
 
 async function exportFile() {
@@ -163,7 +175,7 @@ async function exportFile() {
   } catch (e) { msg(e.message || "导出失败。", "error"); }
 }
 
-drop.onclick = () => fileInput.click(); drop.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && fileInput.click(); fileInput.onchange = () => fileInput.files[0] && load(fileInput.files[0]);
+drop.onclick = () => fileInput.click(); drop.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && fileInput.click(); fileInput.onchange = () => { const file = fileInput.files[0]; fileInput.value = ""; if (file) load(file); };
 ["dragenter","dragover"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.add("is-dragging"); })); ["dragleave","drop"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.remove("is-dragging"); })); drop.ondrop = (e) => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]);
 $("#change-file").onclick = () => fileInput.click(); $("#export-file").onclick = exportFile;
 $("#geometry-layer").onchange = (e) => { state.geometryLayer = Number(e.target.value); renderGeometry(); };
