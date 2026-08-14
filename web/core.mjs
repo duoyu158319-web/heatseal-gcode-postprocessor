@@ -149,6 +149,26 @@ export function analyzeLayerGeometry(layer, tolerance = .05) {
   return { layerNumber: layer.number, z: layer.z, contours, components, contacts, crossObjectRelations, maxDepth: Math.max(0, ...contours.map((contour) => contour.depth)) };
 }
 
+export function classifyLayerRegions(layer) {
+  const analysis = analyzeLayerGeometry(layer), usable = analysis.contours.filter((contour) => contour.area > 1).sort((a, b) => b.area - a.area);
+  const outer = usable[0] ?? null;
+  const isInsideOuter = (contour) => {
+    let current = contour, seen = new Set();
+    while (current?.parent !== null && !seen.has(current.index)) {
+      seen.add(current.index);
+      current = analysis.contours[current.parent];
+      if (current === outer) return true;
+    }
+    return false;
+  };
+  const innerBoundary = outer ? usable.filter((contour) => contour !== outer && contour.area >= outer.area * .6 && isInsideOuter(contour)).sort((a, b) => b.area - a.area)[0] ?? null : null;
+  const outerRingContours = [innerBoundary, outer].filter(Boolean), outerRingSet = new Set(outerRingContours.map((contour) => contour.track));
+  const outerRingTracks = outerRingContours.map((contour) => contour.track).sort((a, b) => a.areaScore - b.areaScore);
+  const skeletonTracks = layer.tracks.filter((track) => !outerRingSet.has(track));
+  const skeletonWallTracks = layer.wallTracks.filter((track) => track.closed && !outerRingSet.has(track));
+  return { analysis, ringDetected: Boolean(innerBoundary), outerRingTracks, skeletonTracks, skeletonWallTracks, outermostTrack: outer?.track ?? null, innerBoundaryTrack: innerBoundary?.track ?? null };
+}
+
 function statesFor(lines) {
   const before = new Array(lines.length);
   let s = { x: undefined, y: undefined, z: undefined, feed: undefined, feature: "未标注路径", objectId: "未标注主体", axesAbsolute: true, extrusionRelative: true };
@@ -248,8 +268,9 @@ export function parseGcode(text) {
     usable.forEach((t) => (byObject[t.objectId] ??= []).push(t));
     Object.values(byObject).forEach((xs) => xs.sort((a, b) => a.areaScore - b.areaScore));
     const sequence = []; tracks.forEach((t) => { if (sequence.at(-1) !== t.objectId) sequence.push(t.objectId); });
-    const insertionIndex = insertionFor(lines, layer);
-    return { ...layer, z: layer.z ?? states[insertionIndex]?.z, tracks, wallTracks: usable, byObject, objectSequence: sequence, objectTransitions: Math.max(0, sequence.length - 1), insertionIndex, insertionState: states[insertionIndex], hasPause: /M400 U1/.test(lines.slice(layer.start, layer.end).join("\n")) };
+    const pauseOffset = lines.slice(layer.start, layer.end).findIndex((line) => /^\s*M400\s+U1(?:\s|;|$)/i.test(line)), pauseIndex = pauseOffset < 0 ? null : layer.start + pauseOffset;
+    const insertionIndex = pauseIndex === null ? insertionFor(lines, layer) : pauseIndex + 1;
+    return { ...layer, z: layer.z ?? states[insertionIndex]?.z, tracks, wallTracks: usable, byObject, objectSequence: sequence, objectTransitions: Math.max(0, sequence.length - 1), pauseIndex, insertionIndex, insertionState: states[insertionIndex], hasPause: pauseIndex !== null };
   });
   const objectIds = [...new Set(layers.flatMap((l) => l.tracks.map((t) => t.objectId)))];
   const temps = [...text.matchAll(/^M10[49]\s+S([\d.]+)/gm)].map((m) => Number(m[1])).filter((n) => n > 180);
@@ -287,30 +308,30 @@ export function md5Text(input) {
   return [a,b,c,d].map((n) => [0,8,16,24].map((shift) => ((n >>> shift) & 255).toString(16).padStart(2, "0")).join("")).join("").toUpperCase();
 }
 
-export function getReplayCandidates(parsed, pauseLayerNumber, objectIds = []) {
+export function getReplayCandidates(parsed, pauseLayerNumber, objectIds = [], regionIds = null) {
   const sourceLayer = parsed.layers.find((l) => l.number === pauseLayerNumber - 1);
   if (!sourceLayer) return { sourceLayer: null, tracks: [] };
-  const ids = objectIds.length ? objectIds : Object.keys(sourceLayer.byObject);
-  const tracks = ids.flatMap((id) => {
-    const group = [...(sourceLayer.byObject[id] ?? [])].sort((a, b) => a.areaScore - b.areaScore);
-    return group.map((track, innerIndex) => ({ ...track, innerIndex, loopCount: group.length }));
-  });
-  return { sourceLayer, tracks };
+  const ids = new Set(objectIds.length ? objectIds : Object.keys(sourceLayer.byObject)), regions = Array.isArray(regionIds) ? new Set(regionIds) : null, classified = classifyLayerRegions(sourceLayer), outerRingSet = new Set(classified.outerRingTracks);
+  const candidates = sourceLayer.wallTracks.filter((track) => track.closed && ids.has(track.objectId)).map((track) => ({ track, region: outerRingSet.has(track) ? "outer-ring" : "skeleton" })).filter((item) => !regions || regions.has(item.region)).sort((a, b) => a.track.areaScore - b.track.areaScore);
+  const counts = candidates.reduce((result, item) => ({ ...result, [item.region]: (result[item.region] ?? 0) + 1 }), {}), indices = {};
+  const tracks = candidates.map(({ track, region }, innerIndex) => ({ ...track, region, regionIndex: indices[region] = (indices[region] ?? -1) + 1, regionLoopCount: counts[region], innerIndex, loopCount: candidates.length, isOutermost: track === classified.outermostTrack }));
+  return { sourceLayer, tracks, regions: classified };
 }
 
 const coord = (n) => Number(n).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 function replayBlock(parsed, cfg, pauseLayer) {
-  const { sourceLayer, tracks } = getReplayCandidates(parsed, cfg.layerNumber, cfg.objectIds ?? []), selected = tracks.slice(0, cfg.circles);
+  const { sourceLayer, tracks } = getReplayCandidates(parsed, cfg.layerNumber, cfg.objectIds ?? [], cfg.regionIds ?? null), selected = tracks.slice(0, cfg.circles);
   if (!sourceLayer) throw new Error(`第 ${cfg.layerNumber} 层没有可用的下方层。`);
   if (cfg.replay && selected.length < cfg.circles) throw new Error(`第 ${sourceLayer.number} 层只识别到 ${selected.length} 条可复走闭合外墙，少于要求的 ${cfg.circles} 圈。`);
   const s = pauseLayer.insertionState ?? {}, safeZ = Math.min(parsed.printableHeight || 256, cfg.safeZ ?? 256), replayZ = round((sourceLayer.z ?? 0) + (cfg.clearance ?? .01)), liftZ = Math.min(safeZ, replayZ + (cfg.betweenLift ?? 10));
-  const out = [`; HEATSEAL_POSTPROCESS_START layer=${cfg.layerNumber}`, "; PAUSE_PRINTING", "M400 U1"];
+  const out = [`; HEATSEAL_POSTPROCESS_START layer=${cfg.layerNumber}`, "; Uses existing Bambu Studio pause above; no new pause inserted"];
   if (cfg.replay) {
-    out.push(`; Dry replay layer ${sourceLayer.number} at Z${coord(replayZ)}; ${selected.length} outer wall loop(s); no extrusion`, "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitBefore ?? 30}`);
-    selected.forEach((t, i) => {
+    const passes = selected.flatMap((track, trackIndex) => Array.from({ length: track.isOutermost ? cfg.outerRepeat : 1 }, (_, passIndex) => ({ track, trackIndex, passIndex, repeatCount: track.isOutermost ? cfg.outerRepeat : 1 })));
+    out.push(`; Dry replay layer ${sourceLayer.number} at Z${coord(replayZ)}; ${selected.length} unique loop(s), ${passes.length} heat-seal pass(es); no extrusion`, "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitBefore ?? 30}`);
+    passes.forEach(({ track: t, trackIndex: i, passIndex, repeatCount }, executionIndex) => {
       const factor = cfg.speedFactors[i] ?? cfg.speedFactors.at(-1), offset = cfg.offsetDistances[i] ?? cfg.offsetDistances.at(-1), shifted = offsetTrack(t, offset);
-      out.push(`; Replay loop ${i + 1}/${selected.length}; factor ${factor}; outward offset ${coord(offset)}mm`, `G1 X${coord(shifted.start.x)} Y${coord(shifted.start.y)} F42000`, `G1 Z${coord(replayZ)} F1200`, `G1 F${coord(Math.max(1, t.originalFeed * factor))}`, "M204 S800", ...shifted.commands);
-      if (i < selected.length - 1) out.push("M204 S10000", `G1 Z${coord(liftZ)} F1200`);
+      out.push(`; Replay loop ${i + 1}/${selected.length}; region ${t.region}; pass ${passIndex + 1}/${repeatCount}; factor ${factor}; outward offset ${coord(offset)}mm`, `G1 X${coord(shifted.start.x)} Y${coord(shifted.start.y)} F42000`, `G1 Z${coord(replayZ)} F1200`, `G1 F${coord(Math.max(1, t.originalFeed * factor))}`, "M204 S800", ...shifted.commands);
+      if (executionIndex < passes.length - 1) out.push("M204 S10000", `G1 Z${coord(liftZ)} F1200`);
     });
     out.push("M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitAfter ?? 10}`, "; Restore pause state");
     if (s.x !== undefined && s.y !== undefined) out.push(`G1 X${coord(s.x)} Y${coord(s.y)} F42000`);
@@ -318,7 +339,7 @@ function replayBlock(parsed, cfg, pauseLayer) {
     out.push(s.axesAbsolute === false ? "G91" : "G90", s.extrusionRelative === false ? "M82" : "M83");
   }
   out.push(`; HEATSEAL_POSTPROCESS_END layer=${cfg.layerNumber}`);
-  return { lines: out, selected, sourceLayer, replayZ, safeZ };
+  return { lines: out, selected, sourceLayer, replayZ, safeZ, passCount: selected.reduce((sum, track) => sum + (track.isOutermost ? cfg.outerRepeat : 1), 0) };
 }
 
 export function generateGcode(text, configs) {
@@ -327,9 +348,10 @@ export function generateGcode(text, configs) {
   for (const raw of configs) {
     const speedFactors = Array.isArray(raw.speedFactors) && raw.speedFactors.length ? raw.speedFactors.map(Number) : [Number(raw.speedFactor ?? .1)];
     const offsetDistances = Array.isArray(raw.offsetDistances) && raw.offsetDistances.length ? raw.offsetDistances.map(Number) : [Number(raw.offsetDistance ?? .2)];
-    const cfg = { ...raw, layerNumber: Number(raw.layerNumber), circles: Number(raw.circles), speedFactors, offsetDistances };
+    const cfg = { ...raw, layerNumber: Number(raw.layerNumber), circles: Number(raw.circles), outerRepeat: Number(raw.outerRepeat ?? 1), speedFactors, offsetDistances };
     if (!Number.isInteger(cfg.layerNumber) || cfg.layerNumber < 2 || cfg.layerNumber > parsed.totalLayers) throw new Error(`暂停层 ${raw.layerNumber} 无效；可选范围为 2–${parsed.totalLayers}。`);
     if (seen.has(cfg.layerNumber)) throw new Error(`第 ${cfg.layerNumber} 层配置了重复暂停。`); seen.add(cfg.layerNumber);
+    if (!Number.isInteger(cfg.outerRepeat) || cfg.outerRepeat < 1 || cfg.outerRepeat > 2) throw new Error("最外圈热封遍数只能选择 1 或 2。");
     if (cfg.replay && (!Number.isInteger(cfg.circles) || cfg.circles < 1)) throw new Error("复走圈数必须是大于 0 的整数。");
     for (let i = 0; cfg.replay && i < cfg.circles; i++) {
       const factor = cfg.speedFactors[i] ?? cfg.speedFactors.at(-1), onTenthStep = Math.abs(factor * 10 - Math.round(factor * 10)) < 1e-9;
@@ -338,6 +360,7 @@ export function generateGcode(text, configs) {
       if (!(offset >= 0 && offset <= .5 && validOffsetStep)) throw new Error(`第 ${i + 1} 圈外扩距离必须在 0–0.5 mm 之间，并以 0.1 mm 为步长。`);
     }
     const layer = parsed.layers.find((l) => l.number === cfg.layerNumber); if (!layer) throw new Error(`未找到第 ${cfg.layerNumber} 层。`);
+    if (!layer.hasPause) throw new Error(`第 ${cfg.layerNumber} 层不是 Bambu Studio 已有暂停层，不能添加热封操作。`);
     const built = replayBlock(parsed, cfg, layer);
     if (built.lines.some((line) => /^G[123]\s.*(?:^|\s)E[-+]?\d/i.test(line))) throw new Error("复走块仍包含挤出参数，已停止导出。 ");
     operations.push({ layerNumber: cfg.layerNumber, insertionIndex: layer.insertionIndex, ...built });
