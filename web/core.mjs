@@ -21,7 +21,7 @@ const signedArea = (points) => points.reduce((sum, point, index) => {
   return sum + point.x * next.y - next.x * point.y;
 }, 0) / 2;
 
-function sampleTrack(track, chord = .12) {
+export function sampleTrack(track, chord = .12) {
   const points = [{ ...track.start }];
   let current = { ...track.start };
   for (const line of track.commands) {
@@ -45,9 +45,11 @@ function sampleTrack(track, chord = .12) {
     }
     current = end;
   }
-  if (dist(points[0], points.at(-1)) <= 1.2) points[points.length - 1] = { ...points[0] };
-  if (dist(points[0], points.at(-1)) > 1e-6) throw new Error("识别到的复走轨迹没有闭合，无法安全外扩。");
-  points.pop();
+  if (track.closed || dist(points[0], points.at(-1)) <= 1.2) {
+    if (dist(points[0], points.at(-1)) <= 1.2) points[points.length - 1] = { ...points[0] };
+    if (dist(points[0], points.at(-1)) > 1e-6) throw new Error("识别到的复走轨迹没有闭合，无法安全外扩。");
+    points.pop();
+  }
   return points.filter((point, index, all) => !index || dist(point, all[index - 1]) > 1e-6);
 }
 
@@ -104,72 +106,7 @@ const segmentsTouch = (a, b, c, d, tolerance) => {
   if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true;
   return onSegment(a, b, c, tolerance) || onSegment(a, b, d, tolerance) || onSegment(c, d, a, tolerance) || onSegment(c, d, b, tolerance);
 };
-const expandedBoundsOverlap = (a, b, tolerance) => a.minX <= b.maxX + tolerance && a.maxX + tolerance >= b.minX && a.minY <= b.maxY + tolerance && a.maxY + tolerance >= b.minY;
-const polygonsTouch = (a, b, tolerance) => {
-  if (!expandedBoundsOverlap(a.bounds, b.bounds, tolerance)) return false;
-  for (let i = 0; i < a.points.length; i++) {
-    const a1 = a.points[i], a2 = a.points[(i + 1) % a.points.length];
-    for (let j = 0; j < b.points.length; j++) if (segmentsTouch(a1, a2, b.points[j], b.points[(j + 1) % b.points.length], tolerance)) return true;
-  }
-  return false;
-};
 
-export function analyzeLayerGeometry(layer, tolerance = .05) {
-  const contours = layer.wallTracks.filter((track) => track.closed).map((track, index) => {
-    const points = sampleTrack(track, .5), area = Math.abs(signedArea(points));
-    return { index, track, points, area, bounds: track.bounds, objectId: track.objectId, feature: track.feature, parent: null, depth: 0, component: null };
-  });
-  contours.forEach((inner) => {
-    const containers = contours.filter((outer) => outer !== inner && outer.area > inner.area && outer.bounds.minX <= inner.bounds.minX && outer.bounds.maxX >= inner.bounds.maxX && outer.bounds.minY <= inner.bounds.minY && outer.bounds.maxY >= inner.bounds.maxY && pointInPolygon(inner.points[0], outer.points));
-    inner.parent = containers.sort((a, b) => a.area - b.area)[0]?.index ?? null;
-  });
-  const byIndex = new Map(contours.map((contour) => [contour.index, contour]));
-  const depthOf = (contour, seen = new Set()) => contour.parent === null || seen.has(contour.index) ? 0 : 1 + depthOf(byIndex.get(contour.parent), new Set([...seen, contour.index]));
-  contours.forEach((contour) => contour.depth = depthOf(contour));
-  const parent = contours.map((_, index) => index), find = (x) => parent[x] === x ? x : (parent[x] = find(parent[x])), join = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; };
-  contours.forEach((contour) => { if (contour.parent !== null) join(contour.index, contour.parent); });
-  const contacts = [];
-  for (let i = 0; i < contours.length; i++) for (let j = i + 1; j < contours.length; j++) {
-    if (!polygonsTouch(contours[i], contours[j], tolerance)) continue;
-    join(i, j); contacts.push({ a: i, b: j, crossObject: contours[i].objectId !== contours[j].objectId });
-  }
-  const roots = new Map();
-  contours.forEach((contour) => { const root = find(contour.index); if (!roots.has(root)) roots.set(root, roots.size + 1); contour.component = roots.get(root); });
-  const crossObjectRelations = [];
-  contours.forEach((contour) => {
-    if (contour.parent === null) return;
-    const outer = byIndex.get(contour.parent);
-    if (outer.objectId !== contour.objectId) crossObjectRelations.push({ type: "nested", inner: contour.index, outer: outer.index, innerObjectId: contour.objectId, outerObjectId: outer.objectId });
-  });
-  contacts.filter((contact) => contact.crossObject).forEach((contact) => crossObjectRelations.push({ type: "contact", a: contact.a, b: contact.b, aObjectId: contours[contact.a].objectId, bObjectId: contours[contact.b].objectId }));
-  const components = [...roots.values()].map((id) => {
-    const members = contours.filter((contour) => contour.component === id), objectIds = [...new Set(members.map((contour) => contour.objectId))];
-    return { id, contourIndices: members.map((contour) => contour.index), objectIds, maxDepth: Math.max(0, ...members.map((contour) => contour.depth)), crossObject: objectIds.length > 1 };
-  });
-  return { layerNumber: layer.number, z: layer.z, contours, components, contacts, crossObjectRelations, maxDepth: Math.max(0, ...contours.map((contour) => contour.depth)) };
-}
-
-export function classifyLayerRegions(layer) {
-  const analysis = analyzeLayerGeometry(layer), usable = analysis.contours.filter((contour) => contour.area > 1).sort((a, b) => b.area - a.area);
-  const outer = usable[0] ?? null;
-  const isInsideOuter = (contour) => {
-    let current = contour, seen = new Set();
-    while (current?.parent !== null && !seen.has(current.index)) {
-      seen.add(current.index);
-      current = analysis.contours[current.parent];
-      if (current === outer) return true;
-    }
-    return false;
-  };
-  const innerBoundary = outer ? usable.filter((contour) => contour !== outer && contour.area >= outer.area * .6 && isInsideOuter(contour)).sort((a, b) => b.area - a.area)[0] ?? null : null;
-  const peripheralContours = [innerBoundary, outer].filter(Boolean).sort((a, b) => a.area - b.area), peripheralSet = new Set(peripheralContours.map((contour) => contour.track));
-  const peripheralWallTracks = peripheralContours.map((contour) => contour.track);
-  const skeletonTracks = layer.tracks.filter((track) => !peripheralSet.has(track));
-  const skeletonWallTracks = layer.wallTracks.filter((track) => track.closed && !peripheralSet.has(track));
-  return { analysis, wallDetected: Boolean(outer), pairedWallDetected: Boolean(innerBoundary), peripheralWallTracks, skeletonTracks, skeletonWallTracks, innermostTrack: innerBoundary?.track ?? outer?.track ?? null, outermostTrack: outer?.track ?? null };
-}
-
-const perimeter = (points) => points.reduce((sum, point, index) => sum + dist(point, points[(index + 1) % points.length]), 0);
 const boundsForPoints = (points) => points.reduce((bounds, point) => ({ minX: Math.min(bounds.minX, point.x), maxX: Math.max(bounds.maxX, point.x), minY: Math.min(bounds.minY, point.y), maxY: Math.max(bounds.maxY, point.y) }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
 const selfIntersects = (points) => {
   for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++) {
@@ -182,16 +119,6 @@ const syntheticTrack = (points, source, feature) => {
   const bounds = boundsForPoints(points), commands = points.slice(1).concat(points[0]).map((point) => `G1 X${round(point.x)} Y${round(point.y)}`);
   return { ...source, feature, start: { ...points[0] }, end: { ...points[0] }, points, commands, closed: true, bounds, width: round(bounds.maxX - bounds.minX), height: round(bounds.maxY - bounds.minY), areaScore: round((bounds.maxX - bounds.minX) * (bounds.maxY - bounds.minY)) };
 };
-
-export function createAutoFillTrack(layer) {
-  const regions = classifyLayerRegions(layer), [inner, outer] = regions.peripheralWallTracks;
-  if (!regions.pairedWallDetected || !inner || !outer) return null;
-  const innerPoints = sampleTrack(inner), outerPoints = sampleTrack(outer), averagePerimeter = (perimeter(innerPoints) + perimeter(outerPoints)) / 2, bandWidth = (Math.abs(signedArea(outerPoints)) - Math.abs(signedArea(innerPoints))) / averagePerimeter;
-  if (!(bandWidth > .05)) return null;
-  const shifted = offsetTrack(inner, bandWidth / 2), points = shifted.points ?? sampleTrack(shifted);
-  if (selfIntersects(points) || points.some((point) => !pointInPolygon(point, outerPoints))) return null;
-  return { ...syntheticTrack(points, inner, "Auto fill"), region: "auto-fill", generated: true, bandWidth: round(bandWidth), offsetDistance: round(bandWidth / 2) };
-}
 
 function statesFor(lines) {
   const before = new Array(lines.length);
@@ -260,7 +187,8 @@ function tracksFor(lines, states, layer) {
     const planar = /^G[123]$/.test(c ?? "") && (x !== undefined || y !== undefined);
     if (planar && e !== undefined && e > 0) {
       const s = states[i];
-      if (!active) active = { layerNumber: layer.number, objectId: s.objectId, feature: s.feature, start: s.x !== undefined && s.y !== undefined ? { x: s.x, y: s.y } : null, end: null, commands: [], feeds: [], bounds: { minX: s.x ?? Infinity, maxX: s.x ?? -Infinity, minY: s.y ?? Infinity, maxY: s.y ?? -Infinity } };
+      if (!active) active = { layerNumber: layer.number, objectId: s.objectId, feature: s.feature, sourceStart: i, sourceEnd: i, start: s.x !== undefined && s.y !== undefined ? { x: s.x, y: s.y } : null, end: null, commands: [], feeds: [], bounds: { minX: s.x ?? Infinity, maxX: s.x ?? -Infinity, minY: s.y ?? Infinity, maxY: s.y ?? -Infinity } };
+      active.sourceEnd = i;
       const clean = strip(strip(line, "E"), "F");
       if (clean) active.commands.push(clean);
       const endX = x ?? s.x, endY = y ?? s.y;
@@ -288,24 +216,13 @@ export function parseGcode(text) {
   const newline = text.includes("\r\n") ? "\r\n" : "\n", lines = text.split(/\r?\n/), states = statesFor(lines);
   const headerTotal = Number(text.match(/;\s*total layer number:\s*(\d+)/i)?.[1] ?? 0);
   const layers = rangesFor(lines, headerTotal).map((layer) => {
-    const tracks = tracksFor(lines, states, layer), walls = tracks.filter((t) => /wall/i.test(t.feature) && t.closed), usable = walls.length ? walls : tracks.filter((t) => t.closed), byObject = {};
-    usable.forEach((t) => (byObject[t.objectId] ??= []).push(t));
-    Object.values(byObject).forEach((xs) => xs.sort((a, b) => a.areaScore - b.areaScore));
-    const sequence = []; tracks.forEach((t) => { if (sequence.at(-1) !== t.objectId) sequence.push(t.objectId); });
+    const tracks = tracksFor(lines, states, layer), walls = tracks.filter((t) => /wall/i.test(t.feature) && t.closed), usable = walls.length ? walls : tracks.filter((t) => t.closed);
     const pauseOffset = lines.slice(layer.start, layer.end).findIndex((line) => /^\s*M400\s+U1(?:\s|;|$)/i.test(line)), pauseIndex = pauseOffset < 0 ? null : layer.start + pauseOffset;
     const insertionIndex = pauseIndex === null ? insertionFor(lines, layer) : pauseIndex + 1;
-    return { ...layer, z: layer.z ?? states[insertionIndex]?.z, tracks, wallTracks: usable, byObject, objectSequence: sequence, objectTransitions: Math.max(0, sequence.length - 1), pauseIndex, insertionIndex, insertionState: states[insertionIndex], hasPause: pauseIndex !== null };
+    return { ...layer, z: layer.z ?? states[insertionIndex]?.z, tracks, wallTracks: usable, pauseIndex, insertionIndex, insertionState: states[insertionIndex], hasPause: pauseIndex !== null };
   });
-  const objectIds = [...new Set(layers.flatMap((l) => l.tracks.map((t) => t.objectId)))];
   const temps = [...text.matchAll(/^M10[49]\s+S([\d.]+)/gm)].map((m) => Number(m[1])).filter((n) => n > 180);
-  return { text, newline, lines, states, layers, totalLayers: headerTotal || layers.at(-1)?.total || layers.length, objectIds, nozzleTemperature: temps.at(-1), printableHeight: Number(text.match(/;\s*printable_height\s*=\s*([\d.]+)/i)?.[1] ?? 256), preprocessed: /DRY_REPLAY_|HEATSEAL_POSTPROCESS_/i.test(text) };
-}
-
-export function parseObjectNames(sliceInfo = "", plateJson = "") {
-  const names = {};
-  for (const m of sliceInfo.matchAll(/<object[^>]*identify_id="([^"]+)"[^>]*name="([^"]*)"/g)) names[m[1]] = m[2] || `主体 ${m[1]}`;
-  try { for (const o of JSON.parse(plateJson).bbox_objects ?? []) names[String(o.id)] ??= o.name || `主体 ${o.id}`; } catch {}
-  return names;
+  return { text, newline, lines, states, layers, totalLayers: headerTotal || layers.at(-1)?.total || layers.length, nozzleTemperature: temps.at(-1), printableHeight: Number(text.match(/;\s*printable_height\s*=\s*([\d.]+)/i)?.[1] ?? 256), preprocessed: /DRY_REPLAY_|HEATSEAL_POSTPROCESS_/i.test(text) };
 }
 
 export function md5Text(input) {
@@ -332,30 +249,52 @@ export function md5Text(input) {
   return [a,b,c,d].map((n) => [0,8,16,24].map((shift) => ((n >>> shift) & 255).toString(16).padStart(2, "0")).join("")).join("").toUpperCase();
 }
 
-export function getReplayCandidates(parsed, pauseLayerNumber, objectIds = []) {
+const candidateTracksForLayer = (layer) => layer.tracks
+  .map((track, sourceIndex) => ({ track, sourceIndex }))
+  .sort((a, b) => a.track.sourceStart - b.track.sourceStart)
+  .map(({ track, sourceIndex }, lineIndex, all) => ({
+    ...track,
+    trackId: `${layer.number}:${track.sourceStart}-${track.sourceEnd}`,
+    lineIndex,
+    lineCount: all.length,
+    sourceIndex
+  }));
+
+const finalCutTrackForLayer = (layer) => candidateTracksForLayer(layer).filter((track) => track.closed).sort((a, b) => a.areaScore - b.areaScore).at(-1) ?? null;
+
+export function getReplayCandidates(parsed, pauseLayerNumber) {
   const sourceLayer = parsed.layers.find((l) => l.number === pauseLayerNumber - 1);
   if (!sourceLayer) return { sourceLayer: null, tracks: [] };
-  const ids = new Set(objectIds.length ? objectIds : Object.keys(sourceLayer.byObject)), classified = classifyLayerRegions(sourceLayer);
-  const candidates = classified.peripheralWallTracks.filter((track) => track.closed && ids.has(track.objectId));
-  const tracks = candidates.map((track, innerIndex) => ({ ...track, region: "peripheral-wall", regionIndex: innerIndex, regionLoopCount: candidates.length, innerIndex, loopCount: candidates.length, isOutermost: innerIndex === candidates.length - 1 }));
-  return { sourceLayer, tracks, regions: classified, autoFillTrack: createAutoFillTrack(sourceLayer) };
+  return { sourceLayer, tracks: candidateTracksForLayer(sourceLayer) };
 }
 
 const coord = (n) => Number(n).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+const selectedTracksFor = (cfg, tracks) => {
+  if (Array.isArray(cfg.selectedTrackIds)) {
+    const selectedIds = new Set(cfg.selectedTrackIds.map(String));
+    return tracks.filter((track) => selectedIds.has(track.trackId));
+  }
+  if (Number.isInteger(cfg.circles) && cfg.circles > 0) return tracks.slice(0, cfg.circles);
+  return tracks;
+};
+const speedFactorFor = (cfg, track, candidateIndex) => Number(cfg.trackSettings?.[track.trackId]?.speedFactor ?? cfg.speedFactors?.[candidateIndex] ?? cfg.speedFactors?.at(-1) ?? cfg.speedFactor ?? .1);
+const repeatCountFor = (cfg, track) => Number(cfg.trackSettings?.[track.trackId]?.repeats ?? 1);
+
 function replayBlock(parsed, cfg, pauseLayer) {
-  const { sourceLayer, tracks, autoFillTrack } = getReplayCandidates(parsed, cfg.layerNumber, cfg.objectIds ?? []), selected = tracks.slice(0, cfg.circles), fillTrack = cfg.autoFill ? autoFillTrack : null;
+  const { sourceLayer, tracks } = getReplayCandidates(parsed, cfg.layerNumber), selected = selectedTracksFor(cfg, tracks);
   if (!sourceLayer) throw new Error(`第 ${cfg.layerNumber} 层没有可用的下方层。`);
-  if (cfg.replay && selected.length < cfg.circles) throw new Error(`第 ${sourceLayer.number} 层只识别到 ${selected.length} 条外围墙体轨迹，少于要求的 ${cfg.circles} 圈。`);
-  if (cfg.autoFill && !fillTrack) throw new Error(`第 ${sourceLayer.number} 层无法生成安全的自动填缝路径。`);
+  if (cfg.replay && !selected.length) throw new Error(`第 ${sourceLayer.number} 层没有选择用于热封的打印线。`);
   const s = pauseLayer.insertionState ?? {}, safeZ = Math.min(parsed.printableHeight || 256, cfg.safeZ ?? 256), replayZ = round((sourceLayer.z ?? 0) + (cfg.clearance ?? .01)), liftZ = Math.min(safeZ, replayZ + (cfg.betweenLift ?? 10));
   const out = [`; HEATSEAL_POSTPROCESS_START layer=${cfg.layerNumber}`, "; Uses existing Bambu Studio pause above; no new pause inserted"];
   if (cfg.replay) {
-    const passes = selected.flatMap((track, trackIndex) => Array.from({ length: track.isOutermost ? cfg.outerRepeat : 1 }, (_, passIndex) => ({ track, trackIndex, passIndex, repeatCount: track.isOutermost ? cfg.outerRepeat : 1, autoFill: false })));
-    if (fillTrack) passes.push({ track: fillTrack, trackIndex: 0, passIndex: 0, repeatCount: 1, autoFill: true });
-    out.push(`; Dry replay layer ${sourceLayer.number} at Z${coord(replayZ)}; ${selected.length} unique loop(s), ${passes.length} heat-seal pass(es); no extrusion`, "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitBefore ?? 30}`);
-    passes.forEach(({ track: t, trackIndex: i, passIndex, repeatCount, autoFill }, executionIndex) => {
-      const factor = autoFill ? Math.min(...cfg.speedFactors) : cfg.speedFactors[i] ?? cfg.speedFactors.at(-1), offset = autoFill ? 0 : cfg.offsetDistances[i] ?? cfg.offsetDistances.at(-1), shifted = autoFill ? t : offsetTrack(t, offset), label = autoFill ? "Auto fill" : `Replay loop ${i + 1}/${selected.length}`;
-      out.push(`; ${label}; region ${t.region}; pass ${passIndex + 1}/${repeatCount}; factor ${factor}; outward offset ${coord(offset)}mm`, `G1 X${coord(shifted.start.x)} Y${coord(shifted.start.y)} F42000`, `G1 Z${coord(replayZ)} F1200`, `G1 F${coord(Math.max(1, t.originalFeed * factor))}`, "M204 S800", ...shifted.commands);
+    const passes = selected.flatMap((track) => {
+      const repeatCount = repeatCountFor(cfg, track);
+      return Array.from({ length: repeatCount }, (_, passIndex) => ({ track, passIndex, repeatCount }));
+    });
+    out.push(`; Dry replay layer ${sourceLayer.number} at Z${coord(replayZ)}; ${selected.length} selected line(s), ${passes.length} heat-seal pass(es); no extrusion`, "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitBefore ?? 30}`);
+    passes.forEach(({ track: t, passIndex, repeatCount }, executionIndex) => {
+      const candidateIndex = tracks.findIndex((track) => track.trackId === t.trackId), factor = speedFactorFor(cfg, t, candidateIndex), label = `Replay line ${t.lineIndex + 1}/${tracks.length}`;
+      out.push(`; ${label}; pass ${passIndex + 1}/${repeatCount}; factor ${factor}`, `G1 X${coord(t.start.x)} Y${coord(t.start.y)} F42000`, `G1 Z${coord(replayZ)} F1200`, `G1 F${coord(Math.max(1, t.originalFeed * factor))}`, "M204 S800", ...t.commands);
       if (executionIndex < passes.length - 1) out.push("M204 S10000", `G1 Z${coord(liftZ)} F1200`);
     });
     out.push("M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitAfter ?? 10}`, "; Restore pause state");
@@ -364,7 +303,7 @@ function replayBlock(parsed, cfg, pauseLayer) {
     out.push(s.axesAbsolute === false ? "G91" : "G90", s.extrusionRelative === false ? "M82" : "M83");
   }
   out.push(`; HEATSEAL_POSTPROCESS_END layer=${cfg.layerNumber}`);
-  return { lines: out, selected, sourceLayer, replayZ, safeZ, autoFillTrack: fillTrack, passCount: selected.reduce((sum, track) => sum + (track.isOutermost ? cfg.outerRepeat : 1), 0) + (fillTrack ? 1 : 0) };
+  return { lines: out, selected, sourceLayer, replayZ, safeZ, passCount: selected.reduce((sum, track) => sum + repeatCountFor(cfg, track), 0) };
 }
 
 const convexHull = (points) => {
@@ -375,15 +314,15 @@ const convexHull = (points) => {
 };
 
 export function createFinalCutPreview(parsed, options = {}) {
-  const sourceTracks = parsed.layers.map((layer) => classifyLayerRegions(layer).outermostTrack).filter(Boolean), skeletonLayers = parsed.layers.filter((layer) => classifyLayerRegions(layer).skeletonWallTracks.length);
-  if (!sourceTracks.length) throw new Error("没有识别到可用于最终切膜的外围墙体。");
+  const sourceTracks = parsed.layers.map(finalCutTrackForLayer).filter(Boolean);
+  if (!sourceTracks.length) throw new Error("没有找到可用于最终切膜的闭合打印线。");
   const ranked = sourceTracks.map((track) => ({ track, points: sampleTrack(track) })).sort((a, b) => Math.abs(signedArea(b.points)) - Math.abs(signedArea(a.points))), chosen = ranked[0];
   const containsAll = ranked.every(({ points }) => points.every((point) => pointInPolygon(point, chosen.points) || chosen.points.some((candidate) => dist(candidate, point) < .05))), envelopePoints = containsAll ? chosen.points : convexHull(ranked.flatMap((item) => item.points));
   const envelope = syntheticTrack(envelopePoints, chosen.track, "Peripheral envelope"), offset = Number(options.offset ?? 1), shifted = offsetTrack(envelope, offset), cutTrack = syntheticTrack(shifted.points, envelope, "Final film cut");
   if (selfIntersects(cutTrack.points)) throw new Error("最终切膜外扩路径发生自交，无法安全生成。");
-  const skeletonMaxZ = Math.max(0, ...skeletonLayers.map((layer) => Number(layer.z) || 0)), drop = Number(options.drop ?? 0), targetZ = round(skeletonMaxZ - drop);
+  const modelMaxZ = Math.max(0, ...parsed.layers.filter((layer) => layer.tracks.length).map((layer) => Number(layer.z) || 0)), drop = Number(options.drop ?? 0), targetZ = round(modelMaxZ - drop);
   if (targetZ < 0) throw new Error("最终切膜目标 Z 低于打印平台，请减小向下距离。");
-  return { envelope, track: cutTrack, cutTrack, skeletonMaxZ: round(skeletonMaxZ), targetZ, offset };
+  return { envelope, track: cutTrack, cutTrack, modelMaxZ: round(modelMaxZ), targetZ, offset };
 }
 
 const finalCutInsertionIndex = (parsed) => {
@@ -396,7 +335,7 @@ const finalCutInsertionIndex = (parsed) => {
 };
 
 function finalCutBlock(parsed, options) {
-  const preview = createFinalCutPreview(parsed, options), insertionIndex = finalCutInsertionIndex(parsed), factor = Number(options.speedFactor ?? .1), repeats = Number(options.repeats ?? 1), current = parsed.states[insertionIndex] ?? {}, maxZ = Math.max(0, ...parsed.layers.map((layer) => Number(layer.z) || 0)), safeZ = round(Math.min(parsed.printableHeight || 256, Math.max(maxZ, preview.skeletonMaxZ) + 10)), feed = Math.max(1, preview.envelope.originalFeed * factor), lines = ["; HEATSEAL_FINAL_CUT_START", `; Full-model peripheral envelope; outward offset ${coord(preview.offset)}mm; target Z${coord(preview.targetZ)}; ${repeats} pass(es); no extrusion`, "M400", "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`];
+  const preview = createFinalCutPreview(parsed, options), insertionIndex = finalCutInsertionIndex(parsed), factor = Number(options.speedFactor ?? .1), repeats = Number(options.repeats ?? 1), current = parsed.states[insertionIndex] ?? {}, maxZ = Math.max(0, ...parsed.layers.map((layer) => Number(layer.z) || 0)), safeZ = round(Math.min(parsed.printableHeight || 256, Math.max(maxZ, preview.modelMaxZ) + 10)), feed = Math.max(1, preview.envelope.originalFeed * factor), lines = ["; HEATSEAL_FINAL_CUT_START", `; Full-model closed-line envelope; outward offset ${coord(preview.offset)}mm; target Z${coord(preview.targetZ)}; ${repeats} pass(es); no extrusion`, "M400", "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`];
   for (let pass = 0; pass < repeats; pass++) {
     lines.push(`G1 X${coord(preview.track.start.x)} Y${coord(preview.track.start.y)} F42000`, `G1 Z${coord(preview.targetZ)} F1200`, `G1 F${coord(feed)}`, "M204 S800", `; Final film cut pass ${pass + 1}/${repeats}`, ...preview.track.commands, "M204 S10000", `G1 Z${coord(safeZ)} F1200`);
   }
@@ -409,20 +348,19 @@ export function generateGcode(text, configs, finalCut = {}) {
   if (!configs.length && !finalCut.enabled) throw new Error("请至少添加一个暂停层或开启最终切膜走线。 ");
   for (const raw of configs) {
     const speedFactors = Array.isArray(raw.speedFactors) && raw.speedFactors.length ? raw.speedFactors.map(Number) : [Number(raw.speedFactor ?? .1)];
-    const offsetDistances = Array.isArray(raw.offsetDistances) && raw.offsetDistances.length ? raw.offsetDistances.map(Number) : [Number(raw.offsetDistance ?? 0)];
-    const cfg = { ...raw, replay: raw.replay !== false, layerNumber: Number(raw.layerNumber), circles: Number(raw.circles), outerRepeat: Number(raw.outerRepeat ?? 1), autoFill: Boolean(raw.autoFill), speedFactors, offsetDistances };
+    const cfg = { ...raw, replay: raw.replay !== false, layerNumber: Number(raw.layerNumber), circles: Number(raw.circles), speedFactors, trackSettings: raw.trackSettings ?? {} };
     if (!Number.isInteger(cfg.layerNumber) || cfg.layerNumber < 2 || cfg.layerNumber > parsed.totalLayers) throw new Error(`暂停层 ${raw.layerNumber} 无效；可选范围为 2–${parsed.totalLayers}。`);
     if (seen.has(cfg.layerNumber)) throw new Error(`第 ${cfg.layerNumber} 层配置了重复暂停。`); seen.add(cfg.layerNumber);
-    if (!Number.isInteger(cfg.outerRepeat) || cfg.outerRepeat < 1 || cfg.outerRepeat > 3) throw new Error("最外圈热封遍数只能选择 1、2 或 3。");
-    if (cfg.replay && (!Number.isInteger(cfg.circles) || cfg.circles < 1)) throw new Error("复走圈数必须是大于 0 的整数。");
-    for (let i = 0; cfg.replay && i < cfg.circles; i++) {
-      const factor = cfg.speedFactors[i] ?? cfg.speedFactors.at(-1), onTenthStep = Math.abs(factor * 10 - Math.round(factor * 10)) < 1e-9;
-      if (!(factor > 0 && factor <= 1 && onTenthStep)) throw new Error(`第 ${i + 1} 圈复走速度必须在 0.1–1.0 之间，并以 0.1 为步长；0 不能生成有效复走。`);
-      const offset = cfg.offsetDistances[i] ?? cfg.offsetDistances.at(-1), validOffsetStep = Math.abs(offset * 10 - Math.round(offset * 10)) < 1e-9;
-      if (!(offset >= 0 && offset <= .5 && validOffsetStep)) throw new Error(`第 ${i + 1} 圈外扩距离必须在 0–0.5 mm 之间，并以 0.1 mm 为步长。`);
-    }
     const layer = parsed.layers.find((l) => l.number === cfg.layerNumber); if (!layer) throw new Error(`未找到第 ${cfg.layerNumber} 层。`);
     if (!layer.hasPause) throw new Error(`第 ${cfg.layerNumber} 层不是 Bambu Studio 已有暂停层，不能添加热封操作。`);
+    const candidates = getReplayCandidates(parsed, cfg.layerNumber).tracks, selected = selectedTracksFor(cfg, candidates);
+    if (cfg.replay && !selected.length) throw new Error(`第 ${cfg.layerNumber} 层暂停点没有选择任何热封线。`);
+    selected.forEach((track) => {
+      const candidateIndex = candidates.findIndex((item) => item.trackId === track.trackId), factor = speedFactorFor(cfg, track, candidateIndex), onTenthStep = Math.abs(factor * 10 - Math.round(factor * 10)) < 1e-9;
+      if (!(factor > 0 && factor <= 1 && onTenthStep)) throw new Error(`第 ${track.lineIndex + 1} 条线热封速度必须在 0.1–1.0 之间，并以 0.1 为步长；0 不能生成有效走线。`);
+      const repeats = repeatCountFor(cfg, track);
+      if (!Number.isInteger(repeats) || repeats < 1 || repeats > 3) throw new Error(`第 ${track.lineIndex + 1} 条线热封遍数只能选择 1、2 或 3。`);
+    });
     const built = replayBlock(parsed, cfg, layer);
     if (built.lines.some((line) => /^G[123]\s.*(?:^|\s)E[-+]?\d/i.test(line))) throw new Error("复走块仍包含挤出参数，已停止导出。 ");
     operations.push({ layerNumber: cfg.layerNumber, insertionIndex: layer.insertionIndex, ...built });
@@ -442,4 +380,4 @@ export function generateGcode(text, configs, finalCut = {}) {
   return { text: output.join(parsed.newline), operations: operations.sort((a, b) => a.layerNumber - b.layerNumber), finalCut: cutOperation, parsed };
 }
 
-export const summarizeLayer = (layer) => ({ number: layer.number, z: layer.z, objects: Object.keys(layer.byObject).length, walls: layer.wallTracks.length, transitions: layer.objectTransitions, paused: layer.hasPause });
+export const summarizeLayer = (layer) => ({ number: layer.number, z: layer.z, paused: layer.hasPause });
