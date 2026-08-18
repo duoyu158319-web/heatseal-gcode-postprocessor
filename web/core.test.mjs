@@ -47,6 +47,7 @@ const configFor = (text, { selectedIndices, speedFactors = [], repeats = [], lay
   const tracks = getReplayCandidates(parseGcode(text), layerNumber).tracks, indices = selectedIndices ?? tracks.map((_, index) => index);
   return {
     layerNumber,
+    pressDepth: .1,
     selectedTrackIds: indices.map((index) => tracks[index].trackId),
     trackSettings: Object.fromEntries(tracks.map((track, index) => [track.trackId, { speedFactor: speedFactors[index] ?? .1, repeats: repeats[index] ?? 1 }]))
   };
@@ -87,9 +88,20 @@ test("uses an existing Bambu pause and inserts no duplicate pause or extrusion",
   assert.doesNotMatch(block, /M400 U1/);
   assert.equal(result.text.match(/^M400 U1$/gm)?.length, 1);
   assert.ok(result.text.indexOf("M400 U1") < result.text.indexOf("; HEATSEAL_POSTPROCESS_START"));
-  assert.match(block, /G1 Z0.31 F1200/);
+  assert.match(block, /G1 Z0.2 F1200/);
+  assert.match(block, /press depth 0.1mm/);
   assert.match(block, /G1 F80/);
   assert.doesNotMatch(block, /^G[123]\s.*(?:^|\s)E[-+]?\d/im);
+});
+
+test("supports per-pause heat-seal pressure depth in 0.01 mm steps", () => {
+  const config = configFor(fixture); config.pressDepth = .27;
+  const block = heatSealBlock(generateGcode(fixture, [config]).text);
+  assert.match(block, /at Z0.03; press depth 0.27mm/);
+  const tooSmall = configFor(fixture); tooSmall.pressDepth = .09;
+  assert.throws(() => generateGcode(fixture, [tooSmall]), /0.10–0.50 mm/);
+  const wrongStep = configFor(fixture); wrongStep.pressDepth = .155;
+  assert.throws(() => generateGcode(fixture, [wrongStep]), /0.01 mm/);
 });
 
 test("lists every continuous extrusion line in G-code order without region classification", () => {

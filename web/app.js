@@ -56,7 +56,7 @@ function newConfig(layerNumber) {
   const tracks = getReplayCandidates(state.parsed, layerNumber).tracks;
   return {
     id: crypto.randomUUID(), layerNumber, selectedTrackIds: [], activeTrackId: tracks[0]?.trackId ?? null,
-    trackSettings: Object.fromEntries(tracks.map((track) => [track.trackId, { speedFactor: .1, repeats: 1 }])), clearance: .01,
+    trackSettings: Object.fromEntries(tracks.map((track) => [track.trackId, { speedFactor: .1, repeats: 1 }])), pressDepth: .1,
     safeZ: Math.min(256, state.parsed.printableHeight || 256), waitBefore: 30, waitAfter: 10, betweenLift: 10
   };
 }
@@ -170,6 +170,11 @@ function settingsPanel(cfg, active, enabled) {
   return `<div class="line-settings" data-track-settings="${active.trackId}"><div class="settings-title"><span>当前调整</span><h4>${lineName(active)}</h4><p>已加入热封 · ${active.closed ? "闭合轨迹" : "开放轨迹"} · ${pathLength(active).toFixed(1)} mm</p></div><div class="field-label speed-label"><span>热封速度</span><output>${factor.toFixed(1)} × · ${Math.round(factor * 100)}%</output></div><div class="speed-control"><input class="speed-slider" type="range" min="0.1" max="1" step="0.1" value="${factor}" data-field="lineSpeedFactor" data-track-id="${active.trackId}"><div class="speed-scale">${speedScale(factor)}</div><p class="speed-note">原路径 ${sourceSpeed.toFixed(1)} mm/s，热封 ${outputSpeed.toFixed(1)} mm/s</p></div><div class="field-label repeat-label">热封遍数</div><div class="segmented three line-repeat">${[1, 2, 3].map((value) => `<label><input type="radio" name="line-repeat-${cfg.id}-${active.lineIndex}" data-field="lineRepeats" data-track-id="${active.trackId}" value="${value}" ${repeats === value ? "checked" : ""}><span>${value}遍</span></label>`).join("")}</div></div>`;
 }
 
+function pressDepthControl(cfg, sourceLayer) {
+  const depth = Number(cfg.pressDepth ?? .1), sourceZ = Number(sourceLayer?.z), targetZ = Number.isFinite(sourceZ) ? sourceZ - depth : NaN;
+  return `<div class="press-depth-control"><div class="field-label speed-label"><span>本层热封下压深度</span><output>${depth.toFixed(2)} mm</output></div><input class="press-depth-slider" type="range" min="0.10" max="0.50" step="0.01" value="${depth.toFixed(2)}" data-field="pressDepth" aria-label="第${cfg.layerNumber}层热封下压深度"><div class="press-depth-scale"><span>0.10</span><span>0.30</span><span>0.50 mm</span></div><div class="press-depth-summary"><span>下层表面 <b>${Number.isFinite(sourceZ) ? `Z${sourceZ.toFixed(2)}` : "—"}</b></span><span>热封目标 <b data-press-target>${Number.isFinite(targetZ) ? `Z${targetZ.toFixed(2)}` : "—"}</b></span></div><p class="press-warning">喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。</p></div>`;
+}
+
 function captureConfigView() {
   const viewport = { x: window.scrollX, y: window.scrollY };
   configs.querySelectorAll("[data-config]").forEach((card) => {
@@ -195,10 +200,12 @@ function renderConfigs(preserveView = true) {
   const viewport = preserveView ? captureConfigView() : null;
   configs.innerHTML = state.configs.map((cfg, order) => {
     const { sourceLayer, tracks } = candidatesFor(cfg); ensureConfig(cfg, tracks);
+    cfg.pressDepth = Number(cfg.pressDepth ?? .1);
     const selected = tracks.filter((track) => cfg.selectedTrackIds.includes(track.trackId)), active = tracks.find((track) => track.trackId === cfg.activeTrackId), activeEnabled = Boolean(active && cfg.selectedTrackIds.includes(active.trackId));
     const passCount = selected.reduce((sum, track) => sum + Number(cfg.trackSettings[track.trackId]?.repeats ?? 1), 0);
     const legend = tracks.map((track, index) => `<button type="button" data-action="selectTrack" data-track-id="${track.trackId}" class="${track.trackId === cfg.activeTrackId ? "is-active" : ""} ${cfg.selectedTrackIds.includes(track.trackId) ? "" : "is-muted"}" title="选择${lineName(track)}"><i class="preview-color" style="background:${colors[index % colors.length]}"></i>${lineName(track)}</button>`).join("");
-    return `<article class="config-card pause-dashboard" data-config="${cfg.id}"><header><div class="step-number">${String(order + 1).padStart(2, "0")}</div><div><h3>第${cfg.layerNumber}层暂停点热封</h3><p>读取第 ${sourceLayer?.number ?? "—"} 层的全部连续挤出打印线</p></div><button class="icon-button" data-action="remove" aria-label="移除热封操作">×</button></header><div class="dashboard-grid"><section class="dashboard-preview"><div class="preview-head"><span>轨迹预览 · 可直接点线</span><b>${selected.length}条 · ${passCount}次走线</b></div><canvas data-canvas="${cfg.id}" aria-label="第${sourceLayer?.number ?? "—"}层打印线预览，点击轨迹可选择"></canvas><div class="preview-legend">${legend}</div><div class="path-stats"><span>热封 Z <b>${sourceLayer?.z !== undefined ? (sourceLayer.z + .01).toFixed(2) : "—"}</b></span><span>当前线 <b>${active ? lineName(active) : "—"}</b></span></div></section><section class="dashboard-lines"><div class="column-head"><span>选择热封线</span><b>${selected.length}/${tracks.length}条已选</b></div><p class="column-note">按 G-code 中的出现顺序编号；先勾选要热封的线，再调整当前线参数。</p><div class="track-list">${lineList(cfg, tracks) || "<p class='speed-note is-error'>下方一层没有连续挤出打印线。</p>"}</div></section><section class="dashboard-settings">${settingsPanel(cfg, active, activeEnabled)}</section></div><details><summary>固定工艺参数</summary><div class="fixed-grid"><span>安全位 Z${cfg.safeZ}</span><span>热封前等待 ${cfg.waitBefore}s</span><span>线间抬高 ${cfg.betweenLift}mm</span><span>热封后等待 ${cfg.waitAfter}s</span><span>表面间隙 0.01mm</span></div></details></article>`;
+    const heatSealZ = sourceLayer?.z !== undefined ? Number(sourceLayer.z) - cfg.pressDepth : NaN;
+    return `<article class="config-card pause-dashboard" data-config="${cfg.id}"><header><div class="step-number">${String(order + 1).padStart(2, "0")}</div><div><h3>第${cfg.layerNumber}层暂停点热封</h3><p>读取第 ${sourceLayer?.number ?? "—"} 层的全部连续挤出打印线</p></div><button class="icon-button" data-action="remove" aria-label="移除热封操作">×</button></header><div class="dashboard-grid"><section class="dashboard-preview"><div class="preview-head"><span>轨迹预览 · 可直接点线</span><b>${selected.length}条 · ${passCount}次走线</b></div><canvas data-canvas="${cfg.id}" aria-label="第${sourceLayer?.number ?? "—"}层打印线预览，点击轨迹可选择"></canvas><div class="preview-legend">${legend}</div><div class="path-stats"><span>热封 Z <b data-heat-seal-z>${Number.isFinite(heatSealZ) ? heatSealZ.toFixed(2) : "—"}</b></span><span>当前线 <b>${active ? lineName(active) : "—"}</b></span></div></section><section class="dashboard-lines"><div class="column-head"><span>选择热封线</span><b>${selected.length}/${tracks.length}条已选</b></div><p class="column-note">按 G-code 中的出现顺序编号；先勾选要热封的线，再调整当前线参数。</p><div class="track-list">${lineList(cfg, tracks) || "<p class='speed-note is-error'>下方一层没有连续挤出打印线。</p>"}</div></section><section class="dashboard-settings">${pressDepthControl(cfg, sourceLayer)}${settingsPanel(cfg, active, activeEnabled)}</section></div><details><summary>固定工艺参数</summary><div class="fixed-grid"><span>安全位 Z${cfg.safeZ}</span><span>热封前等待 ${cfg.waitBefore}s</span><span>线间抬高 ${cfg.betweenLift}mm</span><span>热封后等待 ${cfg.waitAfter}s</span><span data-press-chip>下压 ${cfg.pressDepth.toFixed(2)}mm</span></div></details></article>`;
   }).join("");
   const hasSelectedLine = state.configs.some((cfg) => cfg.selectedTrackIds?.length);
   $("#export-file").disabled = !hasSelectedLine && !state.finalCut.enabled;
@@ -292,9 +299,16 @@ configs.onchange = (event) => {
   }
   if (field === "lineSpeedFactor") cfg.trackSettings[event.target.dataset.trackId].speedFactor = Number(event.target.value);
   if (field === "lineRepeats") cfg.trackSettings[event.target.dataset.trackId].repeats = Number(event.target.value);
+  if (field === "pressDepth") cfg.pressDepth = Number(event.target.value);
   renderConfigs();
 };
 configs.oninput = (event) => {
+  if (event.target.dataset.field === "pressDepth") {
+    const card = event.target.closest("[data-config]"), cfg = state.configs.find((item) => item.id === card.dataset.config), depth = Number(event.target.value), sourceLayer = candidatesFor(cfg).sourceLayer, targetZ = Number(sourceLayer?.z) - depth;
+    cfg.pressDepth = depth;
+    const control = event.target.closest(".press-depth-control"); control.querySelector("output").textContent = `${depth.toFixed(2)} mm`; control.querySelector("[data-press-target]").textContent = `Z${targetZ.toFixed(2)}`; control.querySelector(".press-warning").textContent = `喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。`;
+    card.querySelector("[data-heat-seal-z]").textContent = targetZ.toFixed(2); card.querySelector("[data-press-chip]").textContent = `下压 ${depth.toFixed(2)}mm`; return;
+  }
   if (event.target.dataset.field !== "lineSpeedFactor") return;
   const card = event.target.closest("[data-config]"), cfg = state.configs.find((item) => item.id === card.dataset.config), id = event.target.dataset.trackId, factor = Number(event.target.value), track = candidatesFor(cfg).tracks.find((item) => item.trackId === id), panel = event.target.closest(".line-settings");
   cfg.trackSettings[id].speedFactor = factor;
