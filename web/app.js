@@ -172,7 +172,8 @@ function settingsPanel(cfg, active, enabled) {
 
 function pressDepthControl(cfg, sourceLayer) {
   const depth = Number(cfg.pressDepth ?? .1), sourceZ = Number(sourceLayer?.z), targetZ = Number.isFinite(sourceZ) ? sourceZ - depth : NaN;
-  return `<div class="press-depth-control"><div class="field-label speed-label"><span>本层热封下压深度</span><output>${depth.toFixed(2)} mm</output></div><input class="press-depth-slider" type="range" min="0.10" max="0.50" step="0.01" value="${depth.toFixed(2)}" data-field="pressDepth" aria-label="第${cfg.layerNumber}层热封下压深度"><div class="press-depth-scale"><span>0.10</span><span>0.30</span><span>0.50 mm</span></div><div class="press-depth-summary"><span>下层表面 <b>${Number.isFinite(sourceZ) ? `Z${sourceZ.toFixed(2)}` : "—"}</b></span><span>热封目标 <b data-press-target>${Number.isFinite(targetZ) ? `Z${targetZ.toFixed(2)}` : "—"}</b></span></div><p class="press-warning">喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。</p></div>`;
+  const warning = depth === 0 ? "喷嘴与下层表面齐平，不产生下压。" : `喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。`;
+  return `<div class="press-depth-control"><div class="field-label speed-label"><span>本层热封下压深度</span><output>${depth.toFixed(2)} mm</output></div><input class="press-depth-slider" type="range" min="0.00" max="2.00" step="0.01" value="${depth.toFixed(2)}" data-field="pressDepth" aria-label="第${cfg.layerNumber}层热封下压深度"><div class="press-depth-scale"><span>0.00</span><span>1.00</span><span>2.00 mm</span></div><div class="press-depth-summary"><span>下层表面 <b>${Number.isFinite(sourceZ) ? `Z${sourceZ.toFixed(2)}` : "—"}</b></span><span>热封目标 <b data-press-target>${Number.isFinite(targetZ) ? `Z${targetZ.toFixed(2)}` : "—"}</b></span></div><p class="press-warning">${warning}</p></div>`;
 }
 
 function captureConfigView() {
@@ -306,7 +307,7 @@ configs.oninput = (event) => {
   if (event.target.dataset.field === "pressDepth") {
     const card = event.target.closest("[data-config]"), cfg = state.configs.find((item) => item.id === card.dataset.config), depth = Number(event.target.value), sourceLayer = candidatesFor(cfg).sourceLayer, targetZ = Number(sourceLayer?.z) - depth;
     cfg.pressDepth = depth;
-    const control = event.target.closest(".press-depth-control"); control.querySelector("output").textContent = `${depth.toFixed(2)} mm`; control.querySelector("[data-press-target]").textContent = `Z${targetZ.toFixed(2)}`; control.querySelector(".press-warning").textContent = `喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。`;
+    const control = event.target.closest(".press-depth-control"); control.querySelector("output").textContent = `${depth.toFixed(2)} mm`; control.querySelector("[data-press-target]").textContent = `Z${targetZ.toFixed(2)}`; control.querySelector(".press-warning").textContent = depth === 0 ? "喷嘴与下层表面齐平，不产生下压。" : `喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。`;
     card.querySelector("[data-heat-seal-z]").textContent = targetZ.toFixed(2); card.querySelector("[data-press-chip]").textContent = `下压 ${depth.toFixed(2)}mm`; return;
   }
   if (event.target.dataset.field !== "lineSpeedFactor") return;

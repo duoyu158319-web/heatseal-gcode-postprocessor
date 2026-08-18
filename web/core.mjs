@@ -354,7 +354,7 @@ export function generateGcode(text, configs, finalCut = {}) {
     const layer = parsed.layers.find((l) => l.number === cfg.layerNumber); if (!layer) throw new Error(`未找到第 ${cfg.layerNumber} 层。`);
     if (!layer.hasPause) throw new Error(`第 ${cfg.layerNumber} 层不是 Bambu Studio 已有暂停层，不能添加热封操作。`);
     const { sourceLayer, tracks: candidates } = getReplayCandidates(parsed, cfg.layerNumber), selected = selectedTracksFor(cfg, candidates), onHundredthStep = Math.abs(cfg.pressDepth * 100 - Math.round(cfg.pressDepth * 100)) < 1e-9;
-    if (!(cfg.pressDepth >= .1 && cfg.pressDepth <= .5 && onHundredthStep)) throw new Error(`第 ${cfg.layerNumber} 层热封下压深度必须在 0.10–0.50 mm 之间，并以 0.01 mm 为步长。`);
+    if (!(cfg.pressDepth >= 0 && cfg.pressDepth <= 2 && onHundredthStep)) throw new Error(`第 ${cfg.layerNumber} 层热封下压深度必须在 0.00–2.00 mm 之间，并以 0.01 mm 为步长。`);
     if ((sourceLayer?.z ?? 0) - cfg.pressDepth < 0) throw new Error(`第 ${cfg.layerNumber} 层热封目标 Z 低于打印平台，请减小下压深度。`);
     if (cfg.replay && !selected.length) throw new Error(`第 ${cfg.layerNumber} 层暂停点没有选择任何热封线。`);
     selected.forEach((track) => {

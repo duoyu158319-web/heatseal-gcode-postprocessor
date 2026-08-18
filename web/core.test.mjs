@@ -98,8 +98,10 @@ test("supports per-pause heat-seal pressure depth in 0.01 mm steps", () => {
   const config = configFor(fixture); config.pressDepth = .27;
   const block = heatSealBlock(generateGcode(fixture, [config]).text);
   assert.match(block, /at Z0.03; press depth 0.27mm/);
-  const tooSmall = configFor(fixture); tooSmall.pressDepth = .09;
-  assert.throws(() => generateGcode(fixture, [tooSmall]), /0.10–0.50 mm/);
+  const zero = configFor(fixture); zero.pressDepth = 0;
+  assert.match(heatSealBlock(generateGcode(fixture, [zero]).text), /at Z0.3; press depth 0mm/);
+  const tooLarge = configFor(fixture); tooLarge.pressDepth = 2.01;
+  assert.throws(() => generateGcode(fixture, [tooLarge]), /0.00–2.00 mm/);
   const wrongStep = configFor(fixture); wrongStep.pressDepth = .155;
   assert.throws(() => generateGcode(fixture, [wrongStep]), /0.01 mm/);
 });
