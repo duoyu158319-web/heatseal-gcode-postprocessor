@@ -133,6 +133,12 @@ test("uses stable line IDs for manual selection and independent speeds", () => {
   assert.match(block, /Replay line 2\/2;[\s\S]*?factor 0\.5[\s\S]*?G1 F400/);
 });
 
+test("waits 10 seconds at safe Z after every selected heat-seal line", () => {
+  const twoLines = insertBeforeThirdLayer(square(.2, 9.8)), config = configFor(twoLines, { selectedIndices: [0, 1] }), block = heatSealBlock(generateGcode(twoLines, [config]).text);
+  assert.match(block, /Replay line 1\/2;[\s\S]*?; Line complete: move to safe position and wait\nM204 S10000\nG1 Z256 F1200\nM400 S10\n; Replay line 2\/2/);
+  assert.equal(block.match(/^M400 S10$/gm)?.length, 2);
+});
+
 test("generates only the lines selected by the user", () => {
   const threeLines = insertBeforeThirdLayer(`${square(.2, 9.8)}\n${square(4, 6)}`), config = configFor(threeLines, { selectedIndices: [1] }), block = heatSealBlock(generateGcode(threeLines, [config]).text);
   assert.equal(block.match(/; Replay line/g)?.length, 1);

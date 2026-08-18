@@ -284,7 +284,7 @@ function replayBlock(parsed, cfg, pauseLayer) {
   const { sourceLayer, tracks } = getReplayCandidates(parsed, cfg.layerNumber), selected = selectedTracksFor(cfg, tracks);
   if (!sourceLayer) throw new Error(`第 ${cfg.layerNumber} 层没有可用的下方层。`);
   if (cfg.replay && !selected.length) throw new Error(`第 ${sourceLayer.number} 层没有选择用于热封的打印线。`);
-  const pressDepth = Number(cfg.pressDepth ?? .1), s = pauseLayer.insertionState ?? {}, safeZ = Math.min(parsed.printableHeight || 256, cfg.safeZ ?? 256), replayZ = round((sourceLayer.z ?? 0) - pressDepth), liftZ = Math.min(safeZ, replayZ + (cfg.betweenLift ?? 10));
+  const pressDepth = Number(cfg.pressDepth ?? .1), s = pauseLayer.insertionState ?? {}, safeZ = Math.min(parsed.printableHeight || 256, cfg.safeZ ?? 256), replayZ = round((sourceLayer.z ?? 0) - pressDepth), liftZ = Math.min(safeZ, replayZ + (cfg.betweenLift ?? 10)), lineWait = Number(cfg.lineWait ?? 10);
   const out = [`; HEATSEAL_POSTPROCESS_START layer=${cfg.layerNumber}`, "; Uses existing Bambu Studio pause above; no new pause inserted"];
   if (cfg.replay) {
     const passes = selected.flatMap((track) => {
@@ -295,7 +295,11 @@ function replayBlock(parsed, cfg, pauseLayer) {
     passes.forEach(({ track: t, passIndex, repeatCount }, executionIndex) => {
       const candidateIndex = tracks.findIndex((track) => track.trackId === t.trackId), factor = speedFactorFor(cfg, t, candidateIndex), label = `Replay line ${t.lineIndex + 1}/${tracks.length}`;
       out.push(`; ${label}; pass ${passIndex + 1}/${repeatCount}; factor ${factor}`, `G1 X${coord(t.start.x)} Y${coord(t.start.y)} F42000`, `G1 Z${coord(replayZ)} F1200`, `G1 F${coord(Math.max(1, t.originalFeed * factor))}`, "M204 S800", ...t.commands);
-      if (executionIndex < passes.length - 1) out.push("M204 S10000", `G1 Z${coord(liftZ)} F1200`);
+      if (executionIndex < passes.length - 1) {
+        const nextPass = passes[executionIndex + 1], sameLine = nextPass.track.trackId === t.trackId;
+        if (sameLine) out.push("M204 S10000", `G1 Z${coord(liftZ)} F1200`);
+        else out.push("; Line complete: move to safe position and wait", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${lineWait}`);
+      }
     });
     out.push("M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitAfter ?? 10}`, "; Restore pause state");
     if (s.x !== undefined && s.y !== undefined) out.push(`G1 X${coord(s.x)} Y${coord(s.y)} F42000`);
