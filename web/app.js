@@ -173,7 +173,7 @@ function settingsPanel(cfg, active, enabled) {
 function pressDepthControl(cfg, sourceLayer) {
   const depth = Number(cfg.pressDepth ?? .1), sourceZ = Number(sourceLayer?.z), targetZ = Number.isFinite(sourceZ) ? sourceZ - depth : NaN;
   const warning = depth === 0 ? "喷嘴与下层表面齐平，不产生下压。" : `喷嘴将低于下层表面 ${depth.toFixed(2)} mm。数值越大，下压力越高，请确认平台与喷嘴安全。`;
-  return `<div class="press-depth-control"><div class="field-label speed-label"><span>本层热封下压深度</span><output>${depth.toFixed(2)} mm</output></div><input class="press-depth-slider" type="range" min="0.00" max="2.00" step="0.01" value="${depth.toFixed(2)}" data-field="pressDepth" aria-label="第${cfg.layerNumber}层热封下压深度"><div class="press-depth-scale"><span>0.00</span><span>1.00</span><span>2.00 mm</span></div><div class="press-depth-summary"><span>下层表面 <b>${Number.isFinite(sourceZ) ? `Z${sourceZ.toFixed(2)}` : "—"}</b></span><span>热封目标 <b data-press-target>${Number.isFinite(targetZ) ? `Z${targetZ.toFixed(2)}` : "—"}</b></span></div><p class="press-warning">${warning}</p></div>`;
+  return `<div class="press-depth-control"><div class="field-label speed-label"><span>本层热封下压深度</span><output>${depth.toFixed(2)} mm</output></div><input class="press-depth-slider" type="range" min="0.00" max="0.20" step="0.01" value="${depth.toFixed(2)}" data-field="pressDepth" aria-label="第${cfg.layerNumber}层热封下压深度"><div class="press-depth-scale"><span>0.00</span><span>0.10</span><span>0.20 mm</span></div><div class="press-depth-summary"><span>下层表面 <b>${Number.isFinite(sourceZ) ? `Z${sourceZ.toFixed(2)}` : "—"}</b></span><span>热封目标 <b data-press-target>${Number.isFinite(targetZ) ? `Z${targetZ.toFixed(2)}` : "—"}</b></span></div><p class="press-warning">${warning}</p></div>`;
 }
 
 function captureConfigView() {
