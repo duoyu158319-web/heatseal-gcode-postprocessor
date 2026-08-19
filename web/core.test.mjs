@@ -133,6 +133,13 @@ test("uses stable line IDs for manual selection and independent speeds", () => {
   assert.match(block, /Replay line 2\/2;[\s\S]*?factor 0\.5[\s\S]*?G1 F400/);
 });
 
+test("supports 1% heat-seal speed steps and skips lines set to 0%", () => {
+  const twoLines = insertBeforeThirdLayer(square(.2, 9.8)), config = configFor(twoLines, { selectedIndices: [0, 1], speedFactors: [0, .15] }), block = heatSealBlock(generateGcode(twoLines, [config]).text);
+  assert.doesNotMatch(block, /Replay line 1\/2/);
+  assert.match(block, /1 line\(s\) skipped at 0%/);
+  assert.match(block, /Replay line 2\/2;[\s\S]*?factor 0\.15[\s\S]*?G1 F120/);
+});
+
 test("waits 10 seconds at safe Z after every selected heat-seal line", () => {
   const twoLines = insertBeforeThirdLayer(square(.2, 9.8)), config = configFor(twoLines, { selectedIndices: [0, 1] }), block = heatSealBlock(generateGcode(twoLines, [config]).text);
   assert.match(block, /Replay line 1\/2;[\s\S]*?; Line complete: move to safe position and wait\nM204 S10000\nG1 Z256 F1200\nM400 S10\n; Replay line 2\/2/);
@@ -183,9 +190,11 @@ test("rejects heat sealing on a layer without a Bambu pause", () => {
 test("rejects an empty line selection and invalid speed steps", () => {
   assert.throws(() => generateGcode(fixture, [{ ...configFor(fixture), selectedTrackIds: [] }]), /没有选择任何热封线/);
   const zero = configFor(fixture); zero.trackSettings[zero.selectedTrackIds[0]].speedFactor = 0;
-  assert.throws(() => generateGcode(fixture, [zero]), /第 1 条线.*0.1–1.0/);
-  const nonTenth = configFor(fixture); nonTenth.trackSettings[nonTenth.selectedTrackIds[0]].speedFactor = .15;
-  assert.throws(() => generateGcode(fixture, [nonTenth]), /第 1 条线.*0.1–1.0/);
+  assert.throws(() => generateGcode(fixture, [zero]), /速度均为 0%/);
+  const nonPercent = configFor(fixture); nonPercent.trackSettings[nonPercent.selectedTrackIds[0]].speedFactor = .155;
+  assert.throws(() => generateGcode(fixture, [nonPercent]), /以 1% 为步长/);
+  const tooFast = configFor(fixture); tooFast.trackSettings[tooFast.selectedTrackIds[0]].speedFactor = 1.01;
+  assert.throws(() => generateGcode(fixture, [tooFast]), /0%–100%/);
 });
 
 test("creates standard UTF-8 MD5 values", () => {

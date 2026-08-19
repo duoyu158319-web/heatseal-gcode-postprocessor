@@ -284,14 +284,16 @@ function replayBlock(parsed, cfg, pauseLayer) {
   const { sourceLayer, tracks } = getReplayCandidates(parsed, cfg.layerNumber), selected = selectedTracksFor(cfg, tracks);
   if (!sourceLayer) throw new Error(`第 ${cfg.layerNumber} 层没有可用的下方层。`);
   if (cfg.replay && !selected.length) throw new Error(`第 ${sourceLayer.number} 层没有选择用于热封的打印线。`);
+  const executable = selected.filter((track) => speedFactorFor(cfg, track, tracks.findIndex((candidate) => candidate.trackId === track.trackId)) > 0);
+  if (cfg.replay && !executable.length) throw new Error(`第 ${sourceLayer.number} 层已选热封线的速度均为 0%，没有可执行走线。`);
   const pressDepth = Number(cfg.pressDepth ?? .1), s = pauseLayer.insertionState ?? {}, safeZ = Math.min(parsed.printableHeight || 256, cfg.safeZ ?? 256), replayZ = round((sourceLayer.z ?? 0) - pressDepth), liftZ = Math.min(safeZ, replayZ + (cfg.betweenLift ?? 10)), lineWait = Number(cfg.lineWait ?? 10);
   const out = [`; HEATSEAL_POSTPROCESS_START layer=${cfg.layerNumber}`, "; Uses existing Bambu Studio pause above; no new pause inserted"];
   if (cfg.replay) {
-    const passes = selected.flatMap((track) => {
+    const passes = executable.flatMap((track) => {
       const repeatCount = repeatCountFor(cfg, track);
       return Array.from({ length: repeatCount }, (_, passIndex) => ({ track, passIndex, repeatCount }));
     });
-    out.push(`; Dry replay layer ${sourceLayer.number} at Z${coord(replayZ)}; press depth ${coord(pressDepth)}mm; ${selected.length} selected line(s), ${passes.length} heat-seal pass(es); no extrusion`, "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitBefore ?? 30}`);
+    out.push(`; Dry replay layer ${sourceLayer.number} at Z${coord(replayZ)}; press depth ${coord(pressDepth)}mm; ${executable.length} executable line(s), ${selected.length - executable.length} line(s) skipped at 0%, ${passes.length} heat-seal pass(es); no extrusion`, "G90", "M83", "M204 S10000", `G1 Z${coord(safeZ)} F1200`, `M400 S${cfg.waitBefore ?? 30}`);
     passes.forEach(({ track: t, passIndex, repeatCount }, executionIndex) => {
       const candidateIndex = tracks.findIndex((track) => track.trackId === t.trackId), factor = speedFactorFor(cfg, t, candidateIndex), label = `Replay line ${t.lineIndex + 1}/${tracks.length}`;
       out.push(`; ${label}; pass ${passIndex + 1}/${repeatCount}; factor ${factor}`, `G1 X${coord(t.start.x)} Y${coord(t.start.y)} F42000`, `G1 Z${coord(replayZ)} F1200`, `G1 F${coord(Math.max(1, t.originalFeed * factor))}`, "M204 S800", ...t.commands);
@@ -307,7 +309,7 @@ function replayBlock(parsed, cfg, pauseLayer) {
     out.push(s.axesAbsolute === false ? "G91" : "G90", s.extrusionRelative === false ? "M82" : "M83");
   }
   out.push(`; HEATSEAL_POSTPROCESS_END layer=${cfg.layerNumber}`);
-  return { lines: out, selected, sourceLayer, replayZ, safeZ, pressDepth, passCount: selected.reduce((sum, track) => sum + repeatCountFor(cfg, track), 0) };
+  return { lines: out, selected: executable, sourceLayer, replayZ, safeZ, pressDepth, passCount: executable.reduce((sum, track) => sum + repeatCountFor(cfg, track), 0) };
 }
 
 const convexHull = (points) => {
@@ -362,8 +364,8 @@ export function generateGcode(text, configs, finalCut = {}) {
     if ((sourceLayer?.z ?? 0) - cfg.pressDepth < 0) throw new Error(`第 ${cfg.layerNumber} 层热封目标 Z 低于打印平台，请减小下压深度。`);
     if (cfg.replay && !selected.length) throw new Error(`第 ${cfg.layerNumber} 层暂停点没有选择任何热封线。`);
     selected.forEach((track) => {
-      const candidateIndex = candidates.findIndex((item) => item.trackId === track.trackId), factor = speedFactorFor(cfg, track, candidateIndex), onTenthStep = Math.abs(factor * 10 - Math.round(factor * 10)) < 1e-9;
-      if (!(factor > 0 && factor <= 1 && onTenthStep)) throw new Error(`第 ${track.lineIndex + 1} 条线热封速度必须在 0.1–1.0 之间，并以 0.1 为步长；0 不能生成有效走线。`);
+      const candidateIndex = candidates.findIndex((item) => item.trackId === track.trackId), factor = speedFactorFor(cfg, track, candidateIndex), onPercentStep = Math.abs(factor * 100 - Math.round(factor * 100)) < 1e-9;
+      if (!(factor >= 0 && factor <= 1 && onPercentStep)) throw new Error(`第 ${track.lineIndex + 1} 条线热封速度必须在 0%–100% 之间，并以 1% 为步长。`);
       const repeats = repeatCountFor(cfg, track);
       if (!Number.isInteger(repeats) || repeats < 1 || repeats > 3) throw new Error(`第 ${track.lineIndex + 1} 条线热封遍数只能选择 1、2 或 3。`);
     });

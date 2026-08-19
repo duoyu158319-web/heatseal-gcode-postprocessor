@@ -149,10 +149,8 @@ function drawConfig(cfg) {
   });
 }
 
-const speedScale = (factor) => Array.from({ length: 10 }, (_, index) => {
-  const value = (index + 1) / 10;
-  return `<span class="${Math.abs(value - factor) < .001 ? "is-current" : ""}">${value.toFixed(1)}</span>`;
-}).join("");
+const speedScale = () => [0, 25, 50, 75, 100].map((value) => `<span>${value}%</span>`).join("");
+const speedNote = (sourceSpeed, factor) => factor === 0 ? "0%：导出时不执行这条热封线" : `原路径 ${sourceSpeed.toFixed(1)} mm/s，热封 ${(sourceSpeed * factor).toFixed(2)} mm/s`;
 
 function lineList(cfg, tracks) {
   const selected = new Set(cfg.selectedTrackIds);
@@ -165,9 +163,9 @@ function lineList(cfg, tracks) {
 function settingsPanel(cfg, active, enabled) {
   if (!active) return `<div class="settings-empty"><b>没有连续挤出打印线</b><p>请选择其他暂停层，或检查下方一层是否包含挤出走线。</p></div>`;
   const settings = cfg.trackSettings[active.trackId] ??= { speedFactor: .1, repeats: 1 };
-  const factor = Number(settings.speedFactor ?? .1), repeats = Number(settings.repeats ?? 1), sourceSpeed = mmPerSecond(active.originalFeed), outputSpeed = sourceSpeed * factor;
+  const factor = Number(settings.speedFactor ?? .1), repeats = Number(settings.repeats ?? 1), sourceSpeed = mmPerSecond(active.originalFeed);
   if (!enabled) return `<div class="line-settings" data-track-settings="${active.trackId}"><div class="settings-title"><span>当前查看</span><h4>${lineName(active)}</h4><p>${active.closed ? "闭合轨迹" : "开放轨迹"} · ${pathLength(active).toFixed(1)} mm</p></div><div class="settings-note"><b>这条线尚未加入热封</b><p>先在中间勾选，或点击下方按钮，再调整速度与遍数。</p></div><button class="secondary-button add-line-button" type="button" data-action="enableActive" data-track-id="${active.trackId}">加入热封并调整</button></div>`;
-  return `<div class="line-settings" data-track-settings="${active.trackId}"><div class="settings-title"><span>当前调整</span><h4>${lineName(active)}</h4><p>已加入热封 · ${active.closed ? "闭合轨迹" : "开放轨迹"} · ${pathLength(active).toFixed(1)} mm</p></div><div class="field-label speed-label"><span>热封速度</span><output>${factor.toFixed(1)} × · ${Math.round(factor * 100)}%</output></div><div class="speed-control"><input class="speed-slider" type="range" min="0.1" max="1" step="0.1" value="${factor}" data-field="lineSpeedFactor" data-track-id="${active.trackId}"><div class="speed-scale">${speedScale(factor)}</div><p class="speed-note">原路径 ${sourceSpeed.toFixed(1)} mm/s，热封 ${outputSpeed.toFixed(1)} mm/s</p></div><div class="field-label repeat-label">热封遍数</div><div class="segmented three line-repeat">${[1, 2, 3].map((value) => `<label><input type="radio" name="line-repeat-${cfg.id}-${active.lineIndex}" data-field="lineRepeats" data-track-id="${active.trackId}" value="${value}" ${repeats === value ? "checked" : ""}><span>${value}遍</span></label>`).join("")}</div></div>`;
+  return `<div class="line-settings" data-track-settings="${active.trackId}"><div class="settings-title"><span>当前调整</span><h4>${lineName(active)}</h4><p>已加入热封 · ${active.closed ? "闭合轨迹" : "开放轨迹"} · ${pathLength(active).toFixed(1)} mm</p></div><div class="field-label speed-label"><span>热封速度</span><output>${Math.round(factor * 100)}%</output></div><div class="speed-control"><input class="speed-slider" type="range" min="0" max="1" step="0.01" value="${factor}" data-field="lineSpeedFactor" data-track-id="${active.trackId}" aria-label="${lineName(active)}热封速度百分比"><div class="speed-scale">${speedScale()}</div><p class="speed-note">${speedNote(sourceSpeed, factor)}</p></div><div class="field-label repeat-label">热封遍数</div><div class="segmented three line-repeat">${[1, 2, 3].map((value) => `<label><input type="radio" name="line-repeat-${cfg.id}-${active.lineIndex}" data-field="lineRepeats" data-track-id="${active.trackId}" value="${value}" ${repeats === value ? "checked" : ""}><span>${value}遍</span></label>`).join("")}</div></div>`;
 }
 
 function pressDepthControl(cfg, sourceLayer) {
@@ -203,12 +201,12 @@ function renderConfigs(preserveView = true) {
     const { sourceLayer, tracks } = candidatesFor(cfg); ensureConfig(cfg, tracks);
     cfg.pressDepth = Number(cfg.pressDepth ?? .1);
     const selected = tracks.filter((track) => cfg.selectedTrackIds.includes(track.trackId)), active = tracks.find((track) => track.trackId === cfg.activeTrackId), activeEnabled = Boolean(active && cfg.selectedTrackIds.includes(active.trackId));
-    const passCount = selected.reduce((sum, track) => sum + Number(cfg.trackSettings[track.trackId]?.repeats ?? 1), 0);
+    const passCount = selected.reduce((sum, track) => sum + (Number(cfg.trackSettings[track.trackId]?.speedFactor ?? .1) > 0 ? Number(cfg.trackSettings[track.trackId]?.repeats ?? 1) : 0), 0);
     const legend = tracks.map((track, index) => `<button type="button" data-action="selectTrack" data-track-id="${track.trackId}" class="${track.trackId === cfg.activeTrackId ? "is-active" : ""} ${cfg.selectedTrackIds.includes(track.trackId) ? "" : "is-muted"}" title="选择${lineName(track)}"><i class="preview-color" style="background:${colors[index % colors.length]}"></i>${lineName(track)}</button>`).join("");
     const heatSealZ = sourceLayer?.z !== undefined ? Number(sourceLayer.z) - cfg.pressDepth : NaN;
     return `<article class="config-card pause-dashboard" data-config="${cfg.id}"><header><div class="step-number">${String(order + 1).padStart(2, "0")}</div><div><h3>第${cfg.layerNumber}层暂停点热封</h3><p>读取第 ${sourceLayer?.number ?? "—"} 层的全部连续挤出打印线</p></div><button class="icon-button" data-action="remove" aria-label="移除热封操作">×</button></header><div class="dashboard-grid"><section class="dashboard-preview"><div class="preview-head"><span>轨迹预览 · 可直接点线</span><b>${selected.length}条 · ${passCount}次走线</b></div><canvas data-canvas="${cfg.id}" aria-label="第${sourceLayer?.number ?? "—"}层打印线预览，点击轨迹可选择"></canvas><div class="preview-legend">${legend}</div><div class="path-stats"><span>热封 Z <b data-heat-seal-z>${Number.isFinite(heatSealZ) ? heatSealZ.toFixed(2) : "—"}</b></span><span>当前线 <b>${active ? lineName(active) : "—"}</b></span></div></section><section class="dashboard-lines"><div class="column-head"><span>选择热封线</span><b>${selected.length}/${tracks.length}条已选</b></div><p class="column-note">按 G-code 中的出现顺序编号；先勾选要热封的线，再调整当前线参数。</p><div class="track-list">${lineList(cfg, tracks) || "<p class='speed-note is-error'>下方一层没有连续挤出打印线。</p>"}</div></section><section class="dashboard-settings">${pressDepthControl(cfg, sourceLayer)}${settingsPanel(cfg, active, activeEnabled)}</section></div><details><summary>固定工艺参数</summary><div class="fixed-grid"><span>安全位 Z${cfg.safeZ}</span><span>热封前等待 ${cfg.waitBefore}s</span><span>同线多圈间抬高 ${cfg.betweenLift}mm</span><span>每条线后安全位等待 ${cfg.lineWait ?? 10}s</span><span>热封后等待 ${cfg.waitAfter}s</span><span data-press-chip>下压 ${cfg.pressDepth.toFixed(2)}mm</span></div></details></article>`;
   }).join("");
-  const hasSelectedLine = state.configs.some((cfg) => cfg.selectedTrackIds?.length);
+  const hasSelectedLine = state.configs.some((cfg) => cfg.selectedTrackIds?.some((id) => Number(cfg.trackSettings?.[id]?.speedFactor ?? .1) > 0));
   $("#export-file").disabled = !hasSelectedLine && !state.finalCut.enabled;
   state.configs.forEach(drawConfig);
   if (viewport) restoreConfigView(viewport);
@@ -313,9 +311,8 @@ configs.oninput = (event) => {
   if (event.target.dataset.field !== "lineSpeedFactor") return;
   const card = event.target.closest("[data-config]"), cfg = state.configs.find((item) => item.id === card.dataset.config), id = event.target.dataset.trackId, factor = Number(event.target.value), track = candidatesFor(cfg).tracks.find((item) => item.trackId === id), panel = event.target.closest(".line-settings");
   cfg.trackSettings[id].speedFactor = factor;
-  panel.querySelector("output").textContent = `${factor.toFixed(1)} × · ${Math.round(factor * 100)}%`;
-  panel.querySelector(".speed-scale").innerHTML = speedScale(factor);
-  panel.querySelector(".speed-note").textContent = `原路径 ${mmPerSecond(track.originalFeed).toFixed(1)} mm/s，热封 ${mmPerSecond(track.originalFeed * factor).toFixed(1)} mm/s`;
+  panel.querySelector("output").textContent = `${Math.round(factor * 100)}%`;
+  panel.querySelector(".speed-note").textContent = speedNote(mmPerSecond(track.originalFeed), factor);
   drawConfig(cfg);
 };
 $("#final-cut-config").onchange = (event) => { const field = event.target.dataset.finalField; if (!field) return; state.finalCut[field] = field === "enabled" ? event.target.checked : Number(event.target.value); renderFinalCut(); };
